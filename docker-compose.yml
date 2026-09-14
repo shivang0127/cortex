@@ -1,0 +1,30 @@
+# Second Brain — OPTIONAL containerised PostgreSQL.
+#
+# The default development setup runs PostgreSQL 17 + pgvector natively (see
+# README → Database). Use this file instead on a machine where Docker is
+# available and a native install is unwanted — the application cannot tell the
+# difference; it only reads DATABASE_URL. The API, worker and frontend always
+# run natively. Variables come from `.env` at the repository root.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: secondbrain-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-secondbrain}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secondbrain}
+      POSTGRES_DB: ${POSTGRES_DB:-secondbrain}
+    ports:
+      # Loopback only: the database is never reachable from the network.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-secondbrain} -d ${POSTGRES_DB:-secondbrain}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:

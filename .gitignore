@@ -1,0 +1,41 @@
+# ── Secrets & local configuration ─────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Local data (managed copies of imported files, DB volumes) ──
+data/*
+!data/.gitkeep
+
+# ── Python ─────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# ── Node / Next.js ─────────────────────────────────────────────
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── Editors & OS ───────────────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# ── Logs ───────────────────────────────────────────────────────
+*.log
+logs/
