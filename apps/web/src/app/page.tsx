@@ -15,7 +15,7 @@ export default function DashboardPage() {
       <HealthCard />
 
       <p className="text-xs text-muted">
-        Nothing is ingested yet. Library, search, ask, graph, insights and review arrive in
+        Import your sources in the Library. Search, ask, graph, insights and review arrive in
         later phases — see ARCHITECTURE.md §10.
       </p>
     </div>

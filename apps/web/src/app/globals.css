@@ -51,3 +51,16 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans);
 }
+
+/* Tailwind v4's preflight resets buttons to `cursor: default`; anything that acts
+   on click should look clickable. */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+label.clickable,
+select,
+summary {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+}

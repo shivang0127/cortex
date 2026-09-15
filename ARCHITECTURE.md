@@ -4,7 +4,7 @@ An AI system that builds and maintains a structured model of what one person kno
 built from their own documents, with every derived edge traceable back to the passage
 that justified it.
 
-> **Status:** decisions finalised; Phase 0 (foundations) in progress.
+> **Status:** decisions finalised; Phase 0 and Phase 1 (ingestion & storage) built.
 > **Date:** 14 September 2026
 > **Decision record:** see [§11](#11--decision-record) for the answers that shaped this
 > document. Where this file and a later phase disagree, update this file — it is the
@@ -75,7 +75,8 @@ and the model must be able to give both.
 
 The user organises material by university subject and teaching week — *Theory of
 Computing Science → Week 7*. That organisation lives on documents as **metadata**
-(`documents.subject_id`, `documents.week`), never as nodes in the graph. A subject is not
+(`document_subjects` links — a document may belong to several subjects — and
+`documents.week`), never as nodes in the graph. A subject is not
 a concept the user knows; it is a folder the user filed things under. Keeping the two
 apart means "show me Week 7" is a metadata filter that flows down through chunks,
 mentions and concepts, while the graph itself stays about ideas.
@@ -209,9 +210,12 @@ second-brain/
 │  │     ├─ schemas/           # Pydantic: HTTP contracts + LLM output shapes
 │  │     ├─ api/v1/            # routers — thin, no logic
 │  │     ├─ services/          # orchestration; the only layer routers call
+│  │     │                     #   documents.py (register/query) subjects.py storage.py
 │  │     ├─ pipeline/
-│  │     │   ├─ parse/         # pdf.py markdown.py web.py youtube.py docx.py plain.py
-│  │     │   ├─ chunk/
+│  │     │   ├─ parse/         # base.py (ParsedDocument) pdf.py markdown.py docx.py
+│  │     │   │                 #   web.py youtube.py http.py — one output shape
+│  │     │   ├─ chunk.py       # structure-aware, two-level chunker
+│  │     │   ├─ stages.py      # worker job handlers: ingest.parse → ingest.chunk
 │  │     │   ├─ extract/       # concepts.py  relationships.py  claims.py
 │  │     │   ├─ resolve/       # entity resolution
 │  │     │   ├─ classify/      # subject / week suggestion
@@ -313,13 +317,20 @@ create table documents (
   content_hash  text not null unique,     -- re-dropping the same file is a no-op
   meta          jsonb not null default '{}',  -- author, published_at, pages, obsidian_path
   status        text not null,            -- pending|processing|ready|failed
+  error         text,                     -- last ingestion error, for the library view
   raw_text      text,                     -- normalised full text; chunks index into it
-  -- organisation (§0): metadata, never graph nodes
-  subject_id    uuid references subjects on delete set null,
+  -- organisation (§0): metadata, never graph nodes. Subjects: see document_subjects.
   week          int,
   classified_by text not null default 'none',  -- none|user|ai|filename
   classification jsonb not null default '{}',  -- ai suggestion, confidence, signals used
-  created_at    timestamptz not null default now()
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
+create table document_subjects (         -- a document belongs to 0..n subjects
+  document_id uuid not null references documents on delete cascade,
+  subject_id  uuid not null references subjects on delete cascade,
+  primary key (document_id, subject_id)
 );
 
 create table chunks (
@@ -333,9 +344,11 @@ create table chunks (
   token_count   int  not null,
   parent_id     uuid references chunks,         -- section-level chunk, for small-to-big
   superseded_at timestamptz,                    -- soft delete: evidence never dangles
-  tsv           tsvector generated always as (to_tsvector('english', text)) stored,
-  unique (document_id, ordinal)
+  tsv           tsvector generated always as (to_tsvector('english', text)) stored
 );
+-- ordinals are unique among LIVE chunks; a reprocess supersedes the old set and
+-- inserts a new one, so evidence attached to old chunks keeps pointing at real rows
+create unique index on chunks (document_id, ordinal) where superseded_at is null;
 
 -- ══ L2 · EXTRACTION ════════════════════════════════════════
 create table extraction_runs (
@@ -489,12 +502,15 @@ check constraint, not an enum type, so extending it is a one-line migration.
 
 ### Subject and week flow down, they do not live on concepts
 
-A document carries `subject_id` and `week`. Chunks belong to documents, mentions to
-chunks, and concepts are reached through mentions. "Concepts from Week 7 of TCS" is
-therefore a join, not a stored attribute — which is what keeps a concept that appears in
-two subjects from needing two rows. `classified_by` records *who* set the metadata so the
-review queue can show AI-suggested classifications for confirmation and never silently
-overwrite a value the user typed.
+A document carries `week` and is linked to **zero, one or many subjects** through
+`document_subjects` — a lecture that belongs to two courses is one document with two
+links, not two documents. Chunks belong to documents, mentions to chunks, and concepts
+are reached through mentions. "Concepts from Week 7 of TCS" is therefore a join, not a
+stored attribute — which is what keeps a concept that appears in two subjects from
+needing two rows. `classified_by` records *who* set the metadata so the review queue can
+show AI-suggested classifications for confirmation and never silently overwrite a value
+the user typed. Subject names are matched case-insensitively and created on first use,
+so the import form can accept free text.
 
 ### The relationship vocabulary is closed
 
@@ -664,7 +680,7 @@ regenerated once.
 
 | Job type | Does | Writes |
 | --- | --- | --- |
-| `ingest.register` | Hash bytes, dedupe, copy into `data/originals/`, apply user metadata | documents |
+| `ingest.register` | Hash bytes, dedupe, copy into `data/originals/`, apply user metadata. *Runs inside the upload request, not the worker — it must answer "duplicate" synchronously and it is the only moment the uploaded bytes exist.* | documents |
 | `ingest.parse` | Managed copy → normalised text + heading structure (per-kind parser) | documents.raw_text |
 | `classify.document` | Suggest subject / week from content, title, filename; user confirms | documents.classification |
 | `ingest.chunk` | Structure → section chunks + retrieval chunks | chunks |
@@ -714,6 +730,44 @@ without re-parsing a single PDF or spending a cent on re-embedding.
 >
 > **Instead of** A single size, which forces a choice between imprecise retrieval and
 > context-poor answers.
+>
+> *As built (Phase 1):* sections are cut at headings and carry the full `heading_path`;
+> a section longer than `chunk_parent_max_tokens` (2000) is windowed on paragraph
+> boundaries. Inside each section, retrieval chunks grow paragraph by paragraph to
+> `chunk_target_tokens` (300), over-long paragraphs split on sentence ends, and each
+> chunk after the first reaches back ~12 % into its predecessor, snapped to a word
+> boundary, never past `chunk_max_tokens` (450). A heading line is glued to its first
+> paragraph so no chunk is ever just "## Deterministic". `token_count` is a
+> tokenizer-agnostic estimate (words × 1.33) — the real tokenizer belongs to the model
+> chosen in Phase 2, and L1 stays free of model dependencies. Every value is
+> configuration, and every chunk satisfies `text == raw_text[char_start:char_end]`.
+
+> ### Decision — Files are identified by their bytes, URL sources by their URL
+>
+> **Why** `content_hash` is what makes a re-import a no-op. For a file that is the
+> SHA-256 of the bytes, computed in the request. A web page or video cannot be hashed
+> until it has been fetched, and fetching belongs in the worker — so a URL source's
+> identity is the SHA-256 of its canonical URL, and re-importing the same page returns
+> the existing document immediately. The fetched text's own hash is recorded in `meta`
+> after parsing, which is what a later phase's change detection compares against.
+>
+> **Instead of** Fetching inside the upload request to hash the content (seconds of
+> latency on a request that should return in milliseconds), or treating every fetch of
+> the same page as a new document.
+
+> ### Decision — A `ParsedDocument` intermediate, and the standard library for HTTP
+>
+> **Why** Every parser — PyMuPDF, python-docx, stdlib Markdown/text, trafilatura,
+> youtube-transcript-api — produces one shape: normalised text plus heading, page and
+> transcript-segment offsets into that exact text, built by a `TextBuilder` so offsets
+> are computed once on the final string. The chunker and everything after it never
+> know what kind of source they are reading. Web pages and the YouTube oEmbed title are
+> fetched with `urllib` rather than httpx: httpx fixes the header order on the wire
+> (`User-Agent` last), which Wikimedia's edge — and other bot filters — reject outright,
+> while the identical request from `urllib` passes. One fewer runtime dependency, too.
+>
+> **Instead of** Per-kind output formats that the chunker special-cases, or normalising
+> after the fact and shifting every recorded offset.
 
 > ### Decision — Local, free models first; every provider behind a protocol
 >
@@ -1035,16 +1089,19 @@ endpoint proving the whole chain.
 
 > **Done when** the Next.js page renders live data from FastAPI reading from Postgres.
 
-### Phase 1 — Ingestion and storage
+### Phase 1 — Ingestion and storage · *built*
 
-The first job handlers on the worker loop. Managed file copy into `data/`, Markdown and
-PDF parsers (the remaining kinds follow the same protocol and can land here or in Phase 2),
-structure-aware chunking, document upload with user-supplied subject and week, a library
-view filterable by subject/week, a chunk inspector. **No AI anywhere in this phase** — get
-the boring half correct while it's cheap to debug.
+The first job handlers on the worker loop. Managed file copy into `data/`, parsers for
+all six source kinds (PDF, Markdown, plain text, DOCX, web page, YouTube transcript),
+structure-aware two-level chunking, document import with user-supplied subjects (many
+per document) and week, a library view filterable by subject/week/status, a chunk
+inspector, reprocessing, and deletion. Failures are classified: a corrupt file fails
+once and stays failed; a network error retries with backoff. **No AI anywhere in this
+phase** — the boring half is correct while it's cheap to debug.
 
 > **Done when** you can drop a 200-page PDF in and read its chunks with correct heading
-> paths.
+> paths. *Verified on a real Wikipedia article (27 nested sections, 41 retrieval chunks)
+> and an 18-minute YouTube lecture (23 timestamped chunks).*
 
 ### Phase 2 — Semantic search · *first useful build*
 
@@ -1156,6 +1213,25 @@ above reflects them; this section records the answers so the reasoning survives.
   or Zoom recordings (§0).
 - **Study tools** (quizzes, questions, summaries filtered by subject/week/understanding)
   are a Phase 8 deliverable built on the understanding layer (§10).
+
+### Decisions taken during Phase 1
+
+- **A document can belong to many subjects** — `document_subjects`, not a
+  `documents.subject_id` column (§3). Week stays a document column.
+- **Registration is synchronous; parsing and chunking are worker jobs** chained in the
+  same transaction that completes the previous stage (§6).
+- **Files hash by content, URL sources by canonical URL** (§6).
+- **Reprocessing supersedes chunks rather than deleting them**; ordinals are unique among
+  live chunks only (§3).
+- **Non-retryable failures exist** (`NonRetryableJobError`): a corrupt file fails once;
+  a network error backs off and retries. Job types register an `on_failure` hook so the
+  document records the error and, on final failure, the `failed` status.
+- **Integration tests run against a dedicated `secondbrain_test` database** on the same
+  server, migrated by the test session — never the real library, never racing the live
+  worker.
+- **Deferred, deliberately:** SSE job progress (polling is enough until answer streaming
+  arrives in Phase 3), AI subject/week suggestion (needs the Phase 3 LLM), OCR for
+  scanned PDFs (rejected with a clear error instead).
 
 ### Implementation principles
 

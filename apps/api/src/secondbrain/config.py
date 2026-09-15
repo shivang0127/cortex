@@ -37,6 +37,16 @@ class Settings(BaseSettings):
 
     # ── Storage ───────────────────────────────────────────────────────────
     data_dir: Path = Path("data")
+    max_upload_mb: int = 200
+
+    # ── Ingestion ─────────────────────────────────────────────────────────
+    http_timeout_seconds: float = 30.0
+    http_user_agent: str = "SecondBrain/0.1 (+local-first personal knowledge tool)"
+    youtube_languages: list[str] = ["en", "en-US", "en-GB"]
+    chunk_target_tokens: int = 300  # ARCHITECTURE.md §6: starting points, tune per corpus
+    chunk_max_tokens: int = 450
+    chunk_overlap_ratio: float = 0.12
+    chunk_parent_max_tokens: int = 2000
 
     # ── Worker ────────────────────────────────────────────────────────────
     worker_poll_interval_seconds: float = 2.0

@@ -75,12 +75,22 @@ def complete(session: Session, job: Job) -> None:
     session.flush()
 
 
-def fail(session: Session, job: Job, error: str, *, retry_delay: timedelta | None = None) -> None:
-    """Record a failure. Retries with backoff until `max_attempts`, then marks `failed`."""
+def fail(
+    session: Session,
+    job: Job,
+    error: str,
+    *,
+    retry_delay: timedelta | None = None,
+    retry: bool = True,
+) -> bool:
+    """Record a failure. Retries with backoff until `max_attempts`, then marks `failed`.
+
+    Returns True when the failure is final (no further attempt will be made).
+    """
     job.last_error = error[:4000]
     job.locked_at = None
     job.locked_by = None
-    if job.attempts < job.max_attempts:
+    if retry and job.attempts < job.max_attempts:
         if retry_delay is None:  # explicit: timedelta(0) is falsy but means "retry now"
             retry_delay = timedelta(seconds=30 * 2 ** (job.attempts - 1))
         delay = retry_delay
@@ -90,6 +100,7 @@ def fail(session: Session, job: Job, error: str, *, retry_delay: timedelta | Non
         job.status = "failed"
         job.finished_at = datetime.now(UTC)
     session.flush()
+    return job.status == "failed"
 
 
 def requeue_stale(session: Session, older_than: timedelta) -> int:

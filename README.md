@@ -10,7 +10,9 @@ what your library contains. Local-first, single-user, no recurring API costs req
 
 The design and its reasoning live in [ARCHITECTURE.md](ARCHITECTURE.md). Read that first.
 
-> **Status:** Phase 0 (foundations). Nothing is ingested yet; see
+> **Status:** Phase 1 (ingestion & storage) complete — you can import PDFs, Markdown,
+> text, DOCX, web pages and YouTube transcripts, file them under subjects and weeks, and
+> inspect the resulting chunks. No AI yet; see
 > [Development phases](ARCHITECTURE.md#10--development-phases).
 
 ---
@@ -120,8 +122,9 @@ Authentication is already loopback-only in `pg_hba.conf`.
 & "C:\Program Files\PostgreSQL\17\bin\psql.exe" -U postgres -h 127.0.0.1 -f scripts\init-db.sql
 ```
 
-Creates role `secondbrain` / password `secondbrain` and database `secondbrain` (the values
-in `.env.example`) and installs the `vector` and `pg_trgm` extensions into it. Idempotent.
+Creates role `secondbrain` / password `secondbrain`, the database `secondbrain` (the
+values in `.env.example`) plus `secondbrain_test` for the integration tests, and installs
+the `vector` and `pg_trgm` extensions into both. Idempotent.
 The extensions are created here, as superuser, because `vector` is not a *trusted*
 extension and the app role is deliberately not a superuser; the Alembic migration's
 `CREATE EXTENSION IF NOT EXISTS` then simply finds them already present.
@@ -144,7 +147,7 @@ cd apps/api
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1          # Git Bash: source .venv/Scripts/activate
 pip install -e ".[dev]"
-alembic upgrade head                  # creates the jobs table (revision 0001)
+alembic upgrade head                  # jobs, subjects, documents, chunks (revision 0002)
 secondbrain-api                       # http://127.0.0.1:8000 — reloads on save
 ```
 
@@ -156,7 +159,9 @@ In a second terminal (same venv), the background worker:
 secondbrain-worker
 ```
 
-It idles until a job is enqueued. Nothing enqueues jobs yet — that is Phase 1.
+It runs the ingestion stages (`ingest.parse` → `ingest.chunk`) for every import and
+idles otherwise. Keep it running while you import; a stopped worker simply leaves
+documents `pending` until it is started again.
 
 ### 4. Frontend
 
@@ -183,20 +188,62 @@ through silently.
 
 ---
 
-## Verifying Phase 0
+## Using it
+
+Open <http://localhost:3000/library>. Choose a local file (`.pdf`, `.md`, `.txt`,
+`.docx`) or paste a web page / YouTube URL, type one or more subjects (comma-separated;
+unknown names are created), optionally a week, and press **Import**. The request returns
+immediately; the table polls until the worker has parsed and chunked the document. The
+**Find by title** box narrows the table by title or original filename/URL
+(case-insensitive, combinable with the subject/week/status filters — it is a lookup, not
+content search; that is Phase 2). Click
+a title to see its metadata, its job history and every chunk with its heading path,
+character offsets, page numbers and token estimate. **Reprocess** re-parses from the
+managed copy; **Delete** removes the document, its chunks and its managed copy.
+
+What happens to an import (ARCHITECTURE.md §6):
+
+1. **Register** (in the request): the bytes are hashed (files) or the URL is hashed
+   (web/YouTube); a known hash returns the existing document — with any new subjects
+   added — instead of a copy. Files are copied to `data/originals/<hash[:2]>/<hash>.<ext>`
+   and never read from their original location again.
+2. **Parse** (worker): PyMuPDF for PDF (headings from font size), python-docx for DOCX
+   (heading styles), trafilatura for web pages, `youtube-transcript-api` for videos,
+   the standard library for Markdown and text. Every parser yields the same shape:
+   normalised text plus heading/page/timestamp offsets into it.
+3. **Chunk** (worker): one *section* chunk per heading (with the full heading path) and
+   ~300-token *retrieval* chunks inside it, 12 % overlap, exact `char_start`/`char_end`
+   into `documents.raw_text`. A reprocess supersedes the old chunks rather than deleting
+   them.
+
+Not supported yet: scanned PDFs without a text layer (rejected with a clear error — OCR
+is out of scope), videos without transcripts, pages behind logins.
+
+The same operations are available on the API (<http://127.0.0.1:8000/docs>):
+`POST /v1/documents` (multipart: `file` *or* `url`, `subjects`, `week`, `title`),
+`GET /v1/documents?q=&subject_id=&week=&status=&kind=`, `GET /v1/documents/{id}`,
+`GET /v1/documents/{id}/chunks?level=all|sections|retrieval`, `DELETE /v1/documents/{id}`,
+`POST /v1/documents/{id}/reprocess`, `GET /v1/subjects`, `POST /v1/subjects`,
+`GET /v1/jobs/{id}`.
+
+---
+
+## Verifying Phase 0 and Phase 1
 
 | Check | Command | Expect |
 | --- | --- | --- |
 | Backend lint | `cd apps/api; ruff check .; ruff format --check .` | `All checks passed!` |
-| Backend tests | `cd apps/api; pytest` | Unit tests pass. Integration tests (marked `integration`) **skip** if PostgreSQL is down and **run** when it is up. |
-| Migration SQL (no DB needed) | `cd apps/api; alembic upgrade head --sql` | The SQL for extensions + `jobs` printed to stdout. |
+| Backend tests | `cd apps/api; pytest` | 80 tests pass. Integration tests (marked `integration`) run against the **`secondbrain_test`** database (created by `scripts/init-db.sql`, migrated automatically) so they never touch your library or race the running worker; they **skip** if it is unreachable. |
+| Migration SQL (no DB needed) | `cd apps/api; alembic upgrade head --sql` | The SQL for `jobs`, `subjects`, `documents`, `document_subjects`, `chunks` printed to stdout. |
+| Models match migrations | `cd apps/api; alembic check` | `No new upgrade operations detected.` |
 | Database up | `Get-Service postgresql-x64-17` | `Running` (Docker alternative: `docker compose ps` → `healthy`) |
 | pgvector installed | `psql -U secondbrain -h 127.0.0.1 -d secondbrain -c "select extversion from pg_extension where extname='vector'"` | `0.8.6` (installed by `scripts/init-db.sql`) |
-| Migrated | `cd apps/api; alembic current` | `0001 (head)` |
+| Migrated | `cd apps/api; alembic current` | `0002 (head)` |
 | API up | `curl http://127.0.0.1:8000/v1/health` | `"status":"ok"` with `pgvector_version` and `migration_revision` populated. `"degraded"` means the DB is unreachable or unmigrated — the `database.error` field says which. |
-| Worker up | `secondbrain-worker` | `worker … online; handles: system.ping`, then idle (no handlers do anything yet). |
+| Worker up | `secondbrain-worker` | `worker … online; handles: ingest.chunk, ingest.parse, system.ping`. |
 | Frontend checks | `cd apps/web; npm run typecheck; npm run lint; npm run build` | All clean. |
-| Frontend ↔ backend ↔ DB | open <http://localhost:3000> | The **System health** card shows the API version, PostgreSQL version, pgvector version and migration `0001`, all green. If PostgreSQL is down the card says so — that is still the frontend talking to the backend; fix the DB and press Refresh. |
+| Frontend ↔ backend ↔ DB | open <http://localhost:3000> | The **System health** card shows the API version, PostgreSQL version, pgvector version and migration `0002`, all green. If PostgreSQL is down the card says so — that is still the frontend talking to the backend; fix the DB and press Refresh. |
+| Ingestion end to end | <http://localhost:3000/library>: import a PDF with a subject and week | Status goes `pending` → `ready` within seconds (worker running); the document page lists section chunks whose heading paths match the PDF's headings and retrieval chunks with exact character offsets into the stored text. |
 
 ---
 
@@ -209,29 +256,30 @@ second-brain/
 ├─ docker-compose.yml         # OPTIONAL containerised PostgreSQL, for machines with Docker
 ├─ scripts/init-db.sql        # one-time role + database bootstrap for native PostgreSQL
 ├─ .env.example               # copy to .env (gitignored)
-├─ data/                      # gitignored — managed copies of imported files (Phase 1+)
+├─ data/originals/            # gitignored — managed copies of imported files, by content hash
 └─ apps/
    ├─ api/                    # Python backend: FastAPI app + worker, one package
    │  ├─ pyproject.toml       # deps, scripts (secondbrain-api, secondbrain-worker), ruff, pytest
    │  ├─ alembic.ini
-   │  ├─ migrations/          # Alembic env + versions/ (0001: extensions + jobs)
+   │  ├─ migrations/          # Alembic env + versions/ (0001 jobs; 0002 subjects/documents/chunks)
    │  ├─ tests/
    │  └─ src/secondbrain/
    │     ├─ config.py         # pydantic-settings; the environment is the only config source
    │     ├─ main.py           # FastAPI app factory; `secondbrain-api` entrypoint
    │     ├─ worker.py         # queue drain loop; `secondbrain-worker` entrypoint
    │     ├─ openapi.py        # exports openapi.json; `secondbrain-openapi` entrypoint
-   │     ├─ api/v1/           # routers (thin) — health.py, router.py
+   │     ├─ api/v1/           # routers (thin): health, documents, subjects, jobs
    │     ├─ schemas/          # Pydantic HTTP contracts
-   │     ├─ services/         # orchestration; the only layer routers/worker call
+   │     ├─ services/         # documents.py (register/query), subjects.py, storage.py (data/)
+   │     ├─ pipeline/         # parse/ (one parser per kind → ParsedDocument), chunk.py, stages.py
    │     ├─ db/               # base.py (naming convention), engine.py, models/
-   │     ├─ queue/            # queue.py (SKIP LOCKED), registry.py (job type → handler)
+   │     ├─ queue/            # queue.py (SKIP LOCKED), registry.py (job type → handler + on_failure)
    │     └─ providers/        # llm/base.py, embedding/base.py — protocols only, no impls yet
    └─ web/                    # Next.js 16 · TypeScript · Tailwind 4 · App Router
       ├─ next.config.ts       # loads the root .env; exposes NEXT_PUBLIC_API_URL
       └─ src/
-         ├─ app/              # layout.tsx (shell), page.tsx (dashboard)
-         ├─ components/       # HealthCard.tsx — the live status card
+         ├─ app/              # layout.tsx (shell), page.tsx (dashboard), library/ (list + [id])
+         ├─ components/       # HealthCard, ImportForm, Library, DocumentView, StatusBadge
          └─ lib/api/          # client.ts (openapi-fetch) + schema.d.ts (generated)
 ```
 

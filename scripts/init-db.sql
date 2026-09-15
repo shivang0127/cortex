@@ -1,7 +1,7 @@
 -- Second Brain — one-time database bootstrap for a native PostgreSQL install.
 --
--- Creates the application role and database that DATABASE_URL in .env points
--- at, and installs the two extensions the schema depends on. Idempotent: safe
+-- Creates the application role, the database that DATABASE_URL in .env points
+-- at, a separate test database, and the two extensions the schema depends on. Idempotent: safe
 -- to re-run. Run it as the postgres superuser:
 --
 --   Windows (PowerShell):
@@ -26,9 +26,20 @@ SELECT 'CREATE DATABASE secondbrain OWNER secondbrain'
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'secondbrain')
 \gexec
 
+-- A separate database for the integration tests, so `pytest` never touches
+-- your real library and never races the running worker.
+SELECT 'CREATE DATABASE secondbrain_test OWNER secondbrain'
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'secondbrain_test')
+\gexec
+
 \connect secondbrain
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
-\echo Role "secondbrain", database "secondbrain" and extensions vector + pg_trgm are ready.
+\connect secondbrain_test
+
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+\echo Role "secondbrain", databases "secondbrain" + "secondbrain_test" and extensions are ready.

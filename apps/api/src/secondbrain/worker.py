@@ -20,6 +20,7 @@ from secondbrain.config import Settings, get_settings
 from secondbrain.db.engine import get_session_factory
 from secondbrain.main import configure_logging
 from secondbrain.queue import queue, registry
+from secondbrain.queue.registry import NonRetryableJobError
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class Worker:
         self._stop = True
 
     def run_forever(self) -> None:
+        registry.load_handlers()
         log.info(
             "worker %s v%s online; handles: %s",
             self.worker_id,
@@ -76,14 +78,17 @@ class Worker:
                 handler(session, payload)
                 queue.complete(session, job)
             log.info("job %s %s succeeded", job_id, job_type)
-        except Exception:  # noqa: BLE001 — a handler bug must not kill the worker
+        except Exception as exc:  # noqa: BLE001 — a handler bug must not kill the worker
+            retry = not isinstance(exc, NonRetryableJobError)
             error = traceback.format_exc()
-            log.exception("job %s %s failed", job_id, job_type)
+            log.exception("job %s %s failed (retry=%s)", job_id, job_type, retry)
             # 3. Record the failure separately: the handler's transaction rolled back.
             with self.session_factory.begin() as session:
                 job = queue.get(session, job_id)
-                if job is not None:
-                    queue.fail(session, job, error)
+                final = queue.fail(session, job, error, retry=retry) if job is not None else True
+                hook = registry.get_failure_hook(job_type)
+                if hook is not None:
+                    hook(session, payload, f"{type(exc).__name__}: {exc}", final)
         return True
 
 
