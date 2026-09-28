@@ -25,6 +25,7 @@ from secondbrain.pipeline.parse import (
 )
 from secondbrain.queue import queue
 from secondbrain.services import storage
+from secondbrain.services.embeddings import embedded_count_subquery
 from secondbrain.services.subjects import get_or_create_subjects
 
 PARSE_JOB = "ingest.parse"
@@ -178,19 +179,22 @@ def list_documents(
     week: int | None = None,
     status: str | None = None,
     kind: str | None = None,
+    embedding_model: str | None = None,
     limit: int = 100,
     offset: int = 0,
-) -> tuple[list[tuple[Document, int]], int]:
-    """Documents newest first with their retrieval-chunk counts, plus the total.
+) -> tuple[list[tuple[Document, int, int]], int]:
+    """Documents newest first with (retrieval-chunk count, embedded count), plus the total.
 
     `query` is a case-insensitive substring lookup over the title and the original
     filename/URL — a way to find a document you know, not content search (that is
     Phase 2). ILIKE over a few thousand rows is instant; no index needed yet.
     """
     counts = live_chunk_count_subquery()
+    embedded = embedded_count_subquery(embedding_model or "")
     stmt = (
-        select(Document, func.coalesce(counts.c.n, 0))
+        select(Document, func.coalesce(counts.c.n, 0), func.coalesce(embedded.c.n, 0))
         .outerjoin(counts, counts.c.document_id == Document.id)
+        .outerjoin(embedded, embedded.c.document_id == Document.id)
         .options(selectinload(Document.subjects))
     )
     if query and query.strip():
@@ -218,7 +222,7 @@ def list_documents(
     rows = session.execute(
         stmt.order_by(Document.created_at.desc()).limit(limit).offset(offset)
     ).all()
-    return [(doc, n) for doc, n in rows], total
+    return [(doc, n, e) for doc, n, e in rows], total
 
 
 def get_document(session: Session, document_id: uuid.UUID) -> Document:

@@ -20,8 +20,16 @@ def configure_logging(settings: Settings) -> None:
         level=logging.DEBUG if settings.environment == "development" else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
-    # SQLAlchemy's engine logger is noisy at DEBUG; opt in explicitly when needed.
-    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    # Third-party loggers that are unreadably chatty at DEBUG; opt in explicitly when needed.
+    for name in (
+        "sqlalchemy.engine",
+        "httpcore",
+        "httpx",
+        "huggingface_hub",
+        "urllib3",
+        "filelock",
+    ):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 @asynccontextmanager

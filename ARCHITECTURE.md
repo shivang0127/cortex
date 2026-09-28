@@ -4,7 +4,7 @@ An AI system that builds and maintains a structured model of what one person kno
 built from their own documents, with every derived edge traceable back to the passage
 that justified it.
 
-> **Status:** decisions finalised; Phase 0 and Phase 1 (ingestion & storage) built.
+> **Status:** decisions finalised; Phases 0–2 built (foundations, ingestion & storage, semantic search).
 > **Date:** 14 September 2026
 > **Decision record:** see [§11](#11--decision-record) for the answers that shaped this
 > document. Where this file and a later phase disagree, update this file — it is the
@@ -21,6 +21,7 @@ that justified it.
 | PostgreSQL | 17.11 native Windows service (`postgresql-x64-17`) + pgvector 0.8.6 built from source ✓ |
 | Visual Studio Build Tools 2022 | C++ workload ✓ (only used to compile pgvector) |
 | Docker | CLI installed but unusable: hardware virtualisation is disabled and will stay so. Not required. |
+| Embedding model | `BAAI/bge-small-en-v1.5` (quantised ONNX, 67 MB, 384-d) via `fastembed` on CPU, cached in `data/models/` ✓ |
 
 ---
 
@@ -222,7 +223,7 @@ second-brain/
 │  │     │   └─ analyze/       # gaps.py  conflicts.py
 │  │     ├─ providers/
 │  │     │   ├─ llm/           # base.py (protocol) + ollama.py, anthropic.py, …
-│  │     │   └─ embedding/     # base.py (protocol) + local + hosted implementations
+│  │     │   └─ embedding/     # base.py (protocol), fastembed_provider.py, fake.py, factory
 │  │     ├─ queue/             # postgres queue, job registry, retry policy
 │  │     └─ prompts/           # v1/concepts.md, v1/relationships.md, …
 │  └─ web/
@@ -435,16 +436,17 @@ create table relationship_evidence (     -- ◀ the traceability table
 );
 
 -- ══ L4 · DERIVED ═══════════════════════════════════════════
-create table embeddings (
+create table chunk_embeddings (          -- built in Phase 2 (migration 0003)
   id uuid primary key,
-  owner_type text not null,              -- chunk | concept
-  owner_id   uuid not null,
-  model      text not null,
-  embedding  vector(N) not null,         -- N fixed per migration by the chosen model
+  chunk_id   uuid not null references chunks on delete cascade,
+  model      text not null,              -- e.g. 'BAAI/bge-small-en-v1.5'
+  embedding  vector(384) not null,       -- width fixed per migration by the chosen model
   created_at timestamptz not null default now(),
-  unique (owner_type, owner_id, model)
+  unique (chunk_id, model)
 );
-create index on embeddings using hnsw (embedding vector_cosine_ops);
+create index on chunk_embeddings using hnsw (embedding vector_cosine_ops);
+-- concept_embeddings (Phase 4) follows the same shape with concept_id: one table per
+-- owner keeps the foreign keys real and the ANN index per population.
 
 create table gaps (
   id uuid primary key, kind text not null, concept_id uuid references concepts on delete cascade,
@@ -548,6 +550,14 @@ of the ten it likes best, which is worse than an honest `related_to`.
 > dimensionality still needs a second column or table — pgvector indexes are fixed-width —
 > but the model discriminator makes that a planned migration rather than a surprise. The
 > dimension is fixed when the first local embedding model is chosen in Phase 2, not now.)
+>
+> *As built (Phase 2):* one table **per owner** — `chunk_embeddings` now, `concept_embeddings`
+> in Phase 4 — rather than the polymorphic `embeddings(owner_type, owner_id)` sketched above.
+> A real foreign key gives cascade-on-delete and integrity, and each population gets its own
+> HNSW index instead of one mixed index that every concept lookup would have to filter
+> through. The model discriminator, the unique key per (owner, model) and the fixed-width
+> column are unchanged. Vectors of superseded chunks are deleted on reprocess: they only
+> ever served search, and L4 is disposable by definition.
 
 > ### Decision — Evidence is a table, not a column
 >
@@ -684,7 +694,7 @@ regenerated once.
 | `ingest.parse` | Managed copy → normalised text + heading structure (per-kind parser) | documents.raw_text |
 | `classify.document` | Suggest subject / week from content, title, filename; user confirms | documents.classification |
 | `ingest.chunk` | Structure → section chunks + retrieval chunks | chunks |
-| `embed.chunks` | Batch-embed new chunks | embeddings |
+| `embed.chunks` | Embed the document's retrieval chunks that lack a vector for the current model (idempotent; `force` regenerates). Enqueued by `ingest.chunk`; bulk via `POST /v1/embeddings/index` | chunk_embeddings |
 | `extract.concepts` | Per chunk → candidate concepts + claims | concept_mentions, claims |
 | `resolve.concepts` | Candidates → canonical concepts (§8) | concepts, concept_merges |
 | `extract.relationships` | Per chunk, over resolved concepts, with quotes | relationships, relationship_evidence |
@@ -879,6 +889,45 @@ indexed SQL queries, no model call.
 > **Instead of** Vector-only (simpler, and visibly fails on precise terms) or a
 > cross-encoder reranker (better still, but adds a model dependency — a sensible Phase 8
 > upgrade once you can measure whether it helps).
+>
+> *As built (Phase 2):* `GET /v1/search?q&mode=hybrid|semantic|keyword` over live retrieval
+> chunks of ready documents, filterable by subject, week, kind or document. Semantic =
+> pgvector cosine distance against `chunk_embeddings` for the active model; keyword =
+> `websearch_to_tsquery('english', q)` over the generated `chunks.tsv`, ranked by
+> `ts_rank_cd` (all terms must appear — that is what makes it the exact-match side);
+> hybrid = the top 50 of each fused with RRF, `k = 60`, both constants configuration. Every
+> hit carries its document, heading path, page and character offsets, the fused score and
+> the rank it held in each list, so a result can always be explained. **This is retrieval
+> only:** no generated answer, no summary — that is Phase 3.
+
+> ### Decision — Two searches, kept apart: document lookup vs knowledge search
+>
+> **Why** "Find the lecture called *Automata*" and "how does a DFA differ from an NFA?"
+> are different questions with different answers. The Library's *Find document by title*
+> is a case-insensitive `ILIKE` over titles and filenames — instant, exact, and what you
+> want when you know the document. *Search Knowledge* searches what the chunks *say*.
+> Merging them would make the cheap one unpredictable and the expensive one noisy, and it
+> would blur what each result means.
+>
+> **Instead of** One search box that does "everything" and therefore explains nothing.
+
+> ### Decision — bge-small-en-v1.5 via fastembed as the first embedding provider
+>
+> **Why** Local, free and dependency-light: `fastembed` runs the quantised ONNX model on the
+> CPU through ONNX Runtime — no PyTorch (2.5 GB), no separate service, no GPU needed, a
+> one-time 67 MB download into `data/models/`. 384-d unit vectors keep storage trivial
+> (≈1.5 KB per chunk) and indexing fast (a library of this size in seconds; ~50k chunks in
+> well under an hour on this laptop). Measured on the real library: the natural-language
+> question lands on the right lecture with cosine ≈ 0.79 versus ≈ 0.35 for unrelated text.
+> The provider protocol exposes `embed_documents` / `embed_query` because retrieval models
+> are asymmetric, plus `model_id` and `dimension` because the table is keyed by one and the
+> column sized by the other; a dimension guard refuses to write vectors that do not fit.
+>
+> **Instead of** A larger model (`bge-base`, `nomic-embed`: 768-d, 3–8× slower on CPU, better
+> quality — a config change plus one migration when it is worth it); Ollama embeddings
+> (another app to install and keep running, per-call HTTP; still a small adapter behind the
+> same protocol if Phase 3 adopts Ollama for the LLM); a hosted API (recurring cost, and the
+> whole point is that the core application needs none).
 
 > ### Decision — Embed concepts as well as chunks
 >
@@ -1103,11 +1152,14 @@ phase** — the boring half is correct while it's cheap to debug.
 > paths. *Verified on a real Wikipedia article (27 nested sections, 41 retrieval chunks)
 > and an 18-minute YouTube lecture (23 timestamped chunks).*
 
-### Phase 2 — Semantic search · *first useful build*
+### Phase 2 — Semantic search · *built · first useful build*
 
-The first embedding provider (a local model) behind its interface, the embeddings table
-and HNSW index sized to that model, hybrid vector + full-text retrieval with RRF, and a
-search UI with snippets, source links and subject/week filters.
+The first embedding provider (`bge-small-en-v1.5` on CPU via `fastembed`) behind its
+protocol with a deterministic `fake` provider for tests, the `chunk_embeddings` table and
+HNSW index sized to that model, the `embed.chunks` worker stage chained after chunking
+plus a resumable bulk indexer and a coverage endpoint, hybrid vector + full-text retrieval
+with RRF, and a *Search Knowledge* page with mode toggle, subject filter and per-hit
+source location — kept deliberately separate from the Library's title lookup.
 
 > **Done when** searching your own corpus beats `Ctrl+F` across the folder — and you'd miss
 > it if it went away.
@@ -1232,6 +1284,22 @@ above reflects them; this section records the answers so the reasoning survives.
 - **Deferred, deliberately:** SSE job progress (polling is enough until answer streaming
   arrives in Phase 3), AI subject/week suggestion (needs the Phase 3 LLM), OCR for
   scanned PDFs (rejected with a clear error instead).
+
+### Decisions taken during Phase 2
+
+- **Embedding provider**: `fastembed` + `BAAI/bge-small-en-v1.5` (384-d) on CPU; swappable
+  through `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL`; the `fake` provider serves tests (§7).
+- **One embeddings table per owner** (`chunk_embeddings` now, `concept_embeddings` later)
+  with real foreign keys, instead of a polymorphic `owner_type` table (§3).
+- **Only retrieval chunks are embedded**; section chunks are what a later phase reads.
+- **Coverage is a query, not a status column**: "what still needs embedding" is derived
+  from `(chunk, model)` rows, which makes indexing idempotent and resumable and lets a
+  model change be a re-index (§7).
+- **An embedding failure never changes `documents.status`**: ingestion succeeded; the
+  derived layer is retried (transient) or fails on its own job (non-retryable).
+- **Keyword search uses `websearch_to_tsquery` AND-semantics** — deliberately exact; the
+  hybrid fusion is what gives recall.
+- **Document lookup and knowledge search stay separate features** in API and UI (§7).
 
 ### Implementation principles
 

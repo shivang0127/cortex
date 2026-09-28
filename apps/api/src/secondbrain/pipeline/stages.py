@@ -1,7 +1,7 @@
 """Worker stages of the ingestion pipeline (ARCHITECTURE.md §6).
 
-    POST /v1/documents ──▶ ingest.parse ──▶ ingest.chunk ──▶ status = ready
-       (register, sync)      (worker)          (worker)
+    POST /v1/documents ──▶ ingest.parse ──▶ ingest.chunk ──▶ status = ready ──▶ embed.chunks
+       (register, sync)      (worker)          (worker)                          (worker)
 
 Each stage is one job and commits its own output, so a failure in chunking is
 retried from chunking — the parse is never redone. `ingest.parse` stores the
@@ -13,7 +13,7 @@ import logging
 import uuid
 from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from secondbrain.config import get_settings
@@ -21,10 +21,17 @@ from secondbrain.db.models import Chunk, Document
 from secondbrain.pipeline.chunk import ChunkingConfig, chunk_document
 from secondbrain.pipeline.parse import FetchError, ParseError, parse_file, parse_url
 from secondbrain.pipeline.parse.base import Heading, ParsedDocument
+from secondbrain.providers.embedding import (
+    EmbeddingError,
+    EmbeddingsDisabled,
+    embeddings_enabled,
+    get_embedding_provider,
+)
 from secondbrain.queue import queue
 from secondbrain.queue.registry import NonRetryableJobError, register
-from secondbrain.services import storage
+from secondbrain.services import embeddings, storage
 from secondbrain.services.documents import CHUNK_JOB, PARSE_JOB, utcnow
+from secondbrain.services.embeddings import EMBED_JOB, DimensionMismatch
 
 log = logging.getLogger(__name__)
 
@@ -149,13 +156,16 @@ def chunk_stage(session: Session, payload: dict[str, Any]) -> None:
     specs = chunk_document(_parsed_from_document(document), chunking_config())
 
     # Supersede rather than delete: anything a later phase attached to the old
-    # chunks (evidence, embeddings) keeps pointing at real rows.
+    # chunks (evidence) keeps pointing at real rows. Their embeddings are derived
+    # data (L4) and only ever serve search, so those go.
     now = utcnow()
-    session.execute(
-        update(Chunk)
-        .where(Chunk.document_id == document.id, Chunk.superseded_at.is_(None))
-        .values(superseded_at=now)
+    superseded_ids = list(
+        session.execute(
+            select(Chunk.id).where(Chunk.document_id == document.id, Chunk.superseded_at.is_(None))
+        ).scalars()
     )
+    embeddings.delete_embeddings_for_chunks(session, superseded_ids)
+    session.execute(update(Chunk).where(Chunk.id.in_(superseded_ids)).values(superseded_at=now))
 
     parents: dict[int, Chunk] = {}
     for spec in specs:  # parents precede their children in ordinal order
@@ -187,3 +197,33 @@ def chunk_stage(session: Session, payload: dict[str, Any]) -> None:
     document.status = "ready"
     document.error = None
     log.info("chunked %s: %d sections, %d retrieval chunks", document.id, len(parents), retrieval)
+    if retrieval and embeddings_enabled():
+        queue.enqueue(session, EMBED_JOB, {"document_id": str(document.id)})
+
+
+# ── Stage 3: embed ────────────────────────────────────────────────────────
+
+
+@register(EMBED_JOB)
+def embed_stage(session: Session, payload: dict[str, Any]) -> None:
+    """Embed the document's retrieval chunks with the configured model (idempotent)."""
+    settings = get_settings()
+    document = _document(session, payload)
+    try:
+        provider = get_embedding_provider()
+    except EmbeddingsDisabled as exc:
+        raise NonRetryableJobError(str(exc)) from exc
+    try:
+        written = embeddings.embed_document(
+            session,
+            document.id,
+            provider,
+            expected_dimension=settings.embedding_dimension,
+            force=bool(payload.get("force")),
+            batch_size=settings.embedding_batch_size,
+        )
+    except DimensionMismatch as exc:
+        raise NonRetryableJobError(str(exc)) from exc
+    except EmbeddingError as exc:
+        raise RuntimeError(str(exc)) from exc  # model download / runtime trouble: retry later
+    log.info("embedded %s: %d chunks with %s", document.id, written, provider.model_id)

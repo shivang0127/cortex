@@ -27,6 +27,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from secondbrain.config import Settings, get_settings
 from secondbrain.db.engine import get_session_factory, reset_engine_cache
+from secondbrain.providers.embedding import reset_embedding_provider_cache
 
 UNREACHABLE_DATABASE_URL = "postgresql+psycopg://nobody:nothing@127.0.0.1:1/nowhere"
 
@@ -40,11 +41,15 @@ def settings_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[py
     monkeypatch.setenv("ENVIRONMENT", "test")
     monkeypatch.setenv("DATABASE_CONNECT_TIMEOUT_SECONDS", "1")
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    # Tests never load the real embedding model; the deterministic provider stands in.
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "fake")
     get_settings.cache_clear()
     reset_engine_cache()
+    reset_embedding_provider_cache()
     yield monkeypatch
     get_settings.cache_clear()
     reset_engine_cache()
+    reset_embedding_provider_cache()
 
 
 @pytest.fixture

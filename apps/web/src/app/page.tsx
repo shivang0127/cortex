@@ -15,8 +15,8 @@ export default function DashboardPage() {
       <HealthCard />
 
       <p className="text-xs text-muted">
-        Import your sources in the Library. Search, ask, graph, insights and review arrive in
-        later phases — see ARCHITECTURE.md §10.
+        Import your sources in the Library, then Search Knowledge by meaning. Ask, graph,
+        insights and review arrive in later phases — see ARCHITECTURE.md §10.
       </p>
     </div>
   );

@@ -25,6 +25,15 @@ def _run_pipeline(worker, stages: int = 2) -> None:
         assert worker.run_once(), "expected a job to be waiting"
 
 
+def _drain(worker, at_least: int = 1) -> int:
+    """Run every queued job (parse, chunk, embed, …) until the queue is idle."""
+    ran = 0
+    while worker.run_once():
+        ran += 1
+    assert ran >= at_least, f"expected at least {at_least} job(s), ran {ran}"
+    return ran
+
+
 def _document(client, document_id: str) -> dict:
     response = client.get(f"/v1/documents/{document_id}")
     assert response.status_code == 200, response.text
@@ -133,8 +142,8 @@ def test_markdown_pipeline_produces_chunks_with_exact_offsets(library, worker) -
     assert document["chunk_count"] > 0
     assert document["meta"]["section_count"] == 3
     assert "structure" not in document["meta"], "internal structure is not exposed"
-    assert [j["type"] for j in document["jobs"]] == ["ingest.chunk", "ingest.parse"]
-    assert all(j["status"] == "succeeded" for j in document["jobs"])
+    assert [j["type"] for j in document["jobs"]] == ["embed.chunks", "ingest.chunk", "ingest.parse"]
+    assert [j["status"] for j in document["jobs"]] == ["queued", "succeeded", "succeeded"]
 
     chunks = library.client.get(f"/v1/documents/{document_id}/chunks").json()
     assert chunks["total"] == len(chunks["items"])
@@ -291,7 +300,7 @@ def test_reprocess_supersedes_old_chunks(library, worker) -> None:
 
     response = library.client.post(f"/v1/documents/{document_id}/reprocess")
     assert response.status_code == 202 and response.json()["type"] == "ingest.parse"
-    _run_pipeline(worker)
+    _drain(worker, at_least=2)
 
     after = library.client.get(f"/v1/documents/{document_id}/chunks").json()["total"]
     assert after == before, "live chunks are replaced one-for-one"
@@ -300,7 +309,7 @@ def test_reprocess_supersedes_old_chunks(library, worker) -> None:
         superseded = [c for c in rows if c.superseded_at is not None]
     assert len(superseded) == before, "old chunks are kept, marked superseded"
     document = _document(library.client, document_id)
-    assert len(document["jobs"]) == 4
+    assert [j["type"] for j in document["jobs"]].count("ingest.parse") == 2
 
 
 def test_delete_removes_rows_and_managed_file(library, worker) -> None:
@@ -341,7 +350,7 @@ def test_reprocess_replaces_parser_metadata(library, worker, monkeypatch) -> Non
         web, "fetch_html", lambda url: ARTICLE_HTML.replace('content="Jane Doe"', 'content=""')
     )
     library.client.post(f"/v1/documents/{document_id}/reprocess")
-    _run_pipeline(worker)
+    _drain(worker, at_least=2)
     meta = _document(library.client, document_id)["meta"]
     assert "author" not in meta, "stale parser metadata must not survive a reprocess"
     assert meta["chunk_count"] > 0

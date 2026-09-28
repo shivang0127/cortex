@@ -581,6 +581,223 @@
           }
         }
       }
+    },
+    "/v1/search": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Search knowledge: the contents of chunks, by meaning and/or keywords",
+        "operationId": "search_chunks_v1_search_get",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000,
+              "description": "Natural-language query",
+              "title": "Q"
+            },
+            "description": "Natural-language query"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "hybrid",
+                "semantic",
+                "keyword"
+              ],
+              "type": "string",
+              "default": "hybrid",
+              "title": "Mode"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 10,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "subject_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Subject Id"
+            }
+          },
+          {
+            "name": "week",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Week"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pdf",
+                    "markdown",
+                    "text",
+                    "docx",
+                    "web",
+                    "youtube"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "name": "document_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/embeddings/status": {
+      "get": {
+        "tags": [
+          "embeddings"
+        ],
+        "summary": "Index coverage",
+        "operationId": "embedding_status_v1_embeddings_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmbeddingStatusOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/embeddings/index": {
+      "post": {
+        "tags": [
+          "embeddings"
+        ],
+        "summary": "Queue embedding jobs for documents that still need them (resumable)",
+        "operationId": "index_embeddings_v1_embeddings_index_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/IndexRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndexResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -911,6 +1128,12 @@
             "type": "integer",
             "title": "Chunk Count"
           },
+          "embedded_chunk_count": {
+            "type": "integer",
+            "title": "Embedded Chunk Count",
+            "description": "Retrieval chunks with a vector for the configured embedding model",
+            "default": 0
+          },
           "meta": {
             "additionalProperties": true,
             "type": "object",
@@ -1068,6 +1291,12 @@
             "type": "integer",
             "title": "Chunk Count"
           },
+          "embedded_chunk_count": {
+            "type": "integer",
+            "title": "Embedded Chunk Count",
+            "description": "Retrieval chunks with a vector for the configured embedding model",
+            "default": 0
+          },
           "meta": {
             "additionalProperties": true,
             "type": "object",
@@ -1099,6 +1328,81 @@
           "updated_at"
         ],
         "title": "DocumentOut"
+      },
+      "EmbeddingStatusOut": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "dimension": {
+            "type": "integer",
+            "title": "Dimension"
+          },
+          "chunks_total": {
+            "type": "integer",
+            "title": "Chunks Total"
+          },
+          "chunks_embedded": {
+            "type": "integer",
+            "title": "Chunks Embedded"
+          },
+          "documents_total": {
+            "type": "integer",
+            "title": "Documents Total"
+          },
+          "documents_complete": {
+            "type": "integer",
+            "title": "Documents Complete"
+          },
+          "jobs_queued": {
+            "type": "integer",
+            "title": "Jobs Queued"
+          },
+          "jobs_running": {
+            "type": "integer",
+            "title": "Jobs Running"
+          },
+          "jobs_failed": {
+            "type": "integer",
+            "title": "Jobs Failed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "dimension",
+          "chunks_total",
+          "chunks_embedded",
+          "documents_total",
+          "documents_complete",
+          "jobs_queued",
+          "jobs_running",
+          "jobs_failed"
+        ],
+        "title": "EmbeddingStatusOut"
       },
       "HTTPValidationError": {
         "properties": {
@@ -1182,6 +1486,42 @@
         ],
         "title": "ImportResponse"
       },
+      "IndexRequest": {
+        "properties": {
+          "force": {
+            "type": "boolean",
+            "title": "Force",
+            "description": "Regenerate even where vectors exist",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "IndexRequest"
+      },
+      "IndexResponse": {
+        "properties": {
+          "enqueued": {
+            "type": "integer",
+            "title": "Enqueued"
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped",
+            "description": "Documents that already had a job waiting"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enqueued",
+          "skipped",
+          "model"
+        ],
+        "title": "IndexResponse"
+      },
       "JobOut": {
         "properties": {
           "id": {
@@ -1250,6 +1590,221 @@
           "created_at"
         ],
         "title": "JobOut"
+      },
+      "SearchHitOut": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Chunk Id"
+          },
+          "document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Document Id"
+          },
+          "document_title": {
+            "type": "string",
+            "title": "Document Title"
+          },
+          "document_kind": {
+            "type": "string",
+            "title": "Document Kind"
+          },
+          "origin_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Uri"
+          },
+          "subjects": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Subjects"
+          },
+          "week": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Week"
+          },
+          "heading_path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Heading Path"
+          },
+          "page_start": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Start"
+          },
+          "page_end": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page End"
+          },
+          "char_start": {
+            "type": "integer",
+            "title": "Char Start"
+          },
+          "char_end": {
+            "type": "integer",
+            "title": "Char End"
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score",
+            "description": "Ranking score: RRF for hybrid, cosine for semantic, ts_rank for keyword"
+          },
+          "similarity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Similarity",
+            "description": "Cosine similarity (semantic/hybrid)"
+          },
+          "keyword_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keyword Score",
+            "description": "ts_rank_cd (keyword/hybrid)"
+          },
+          "semantic_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Rank"
+          },
+          "keyword_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keyword Rank"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "document_id",
+          "document_title",
+          "document_kind",
+          "subjects",
+          "heading_path",
+          "char_start",
+          "char_end",
+          "ordinal",
+          "text",
+          "score"
+        ],
+        "title": "SearchHitOut"
+      },
+      "SearchResponse": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "hybrid",
+              "semantic",
+              "keyword"
+            ],
+            "title": "Mode"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model",
+            "description": "Embedding model used for the semantic side"
+          },
+          "semantic_candidates": {
+            "type": "integer",
+            "title": "Semantic Candidates"
+          },
+          "keyword_candidates": {
+            "type": "integer",
+            "title": "Keyword Candidates"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/SearchHitOut"
+            },
+            "type": "array",
+            "title": "Results"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "mode",
+          "semantic_candidates",
+          "keyword_candidates",
+          "results"
+        ],
+        "title": "SearchResponse"
       },
       "SubjectCreate": {
         "properties": {

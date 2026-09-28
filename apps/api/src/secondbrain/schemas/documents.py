@@ -49,6 +49,9 @@ class DocumentOut(BaseModel):
     classified_by: str
     subjects: list[SubjectOut]
     chunk_count: int
+    embedded_chunk_count: int = Field(
+        default=0, description="Retrieval chunks with a vector for the configured embedding model"
+    )
     meta: dict[str, Any]
     created_at: datetime
     updated_at: datetime

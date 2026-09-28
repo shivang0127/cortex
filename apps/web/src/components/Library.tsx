@@ -95,6 +95,9 @@ export function Library() {
         <header className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-3">
           <h2 className="font-medium">Documents</h2>
           <span className="text-xs text-muted">{documents ? `${documents.length} shown` : ""}</span>
+          <Link href="/search" className="text-xs text-muted underline hover:text-foreground">
+            Looking for something inside your documents? Search Knowledge →
+          </Link>
           <div className="ml-auto flex flex-wrap gap-2 text-xs">
             <label className="relative flex items-center">
               <span className="sr-only">Find a document by title</span>
@@ -116,8 +119,8 @@ export function Library() {
                 onKeyDown={(e) => {
                   if (e.key === "Escape") setSearch("");
                 }}
-                placeholder="Find by title…"
-                aria-label="Find a document by title"
+                placeholder="Find document by title…"
+                aria-label="Find a document by title (not content search)"
                 className="w-52 rounded border border-border bg-background py-1 pl-7 pr-7"
               />
               {search && (
@@ -209,6 +212,7 @@ export function Library() {
                   <th className="px-3 py-2">Week</th>
                   <th className="px-3 py-2">Status</th>
                   <th className="px-3 py-2 text-right">Chunks</th>
+                  <th className="px-3 py-2 text-right" title="Chunks with an embedding for the current model">Indexed</th>
                   <th className="px-3 py-2">Added</th>
                   <th className="px-3 py-2" />
                 </tr>
@@ -239,6 +243,15 @@ export function Library() {
                       <StatusBadge status={d.status} />
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">{d.chunk_count}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {d.chunk_count === 0 ? (
+                        <span className="text-muted">—</span>
+                      ) : (
+                        <span className={d.embedded_chunk_count >= d.chunk_count ? "text-ok" : "text-warn"}>
+                          {d.embedded_chunk_count}/{d.chunk_count}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-muted">{new Date(d.created_at).toLocaleDateString()}</td>
                     <td className="px-3 py-2 text-right">
                       <button

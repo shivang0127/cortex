@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from secondbrain.config import Settings, get_settings
 from secondbrain.db.engine import get_session
 from secondbrain.db.models import Document, Job
+from secondbrain.providers.embedding import active_model_id, embeddings_enabled
 from secondbrain.schemas.documents import (
     ChunkListOut,
     ChunkOut,
@@ -29,6 +30,7 @@ from secondbrain.schemas.documents import (
 )
 from secondbrain.services import documents as svc
 from secondbrain.services.documents import DocumentNotFound, ImportOptions, UnsupportedSource
+from secondbrain.services.embeddings import embedded_chunk_count
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -38,7 +40,16 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 _HIDDEN_META = {"structure"}  # large and internal; served via /chunks instead
 
 
-def to_document_out(document: Document, chunk_count: int) -> DocumentOut:
+def _embedding_model(settings: Settings) -> str | None:
+    return active_model_id() if embeddings_enabled(settings) else None
+
+
+def _embedded(session: Session, settings: Settings, document_id: uuid.UUID) -> int:
+    model = _embedding_model(settings)
+    return embedded_chunk_count(session, document_id, model) if model else 0
+
+
+def to_document_out(document: Document, chunk_count: int, embedded: int = 0) -> DocumentOut:
     return DocumentOut(
         id=document.id,
         kind=document.kind,
@@ -52,6 +63,7 @@ def to_document_out(document: Document, chunk_count: int) -> DocumentOut:
         classified_by=document.classified_by,
         subjects=[SubjectOut.model_validate(s) for s in document.subjects],
         chunk_count=chunk_count,
+        embedded_chunk_count=embedded,
         meta={k: v for k, v in document.meta.items() if k not in _HIDDEN_META},
         created_at=document.created_at,
         updated_at=document.updated_at,
@@ -120,6 +132,7 @@ def import_document(
 @router.get("", response_model=DocumentListOut, summary="Library listing")
 def list_documents(
     session: SessionDep,
+    settings: SettingsDep,
     q: Annotated[
         str | None, Query(max_length=200, description="Title / filename lookup (case-insensitive)")
     ] = None,
@@ -141,19 +154,24 @@ def list_documents(
         week=week,
         status=status_filter,
         kind=kind,
+        embedding_model=_embedding_model(settings),
         limit=limit,
         offset=offset,
     )
-    return DocumentListOut(items=[to_document_out(d, n) for d, n in rows], total=total)
+    return DocumentListOut(items=[to_document_out(d, n, e) for d, n, e in rows], total=total)
 
 
 @router.get("/{document_id}", response_model=DocumentDetailOut, summary="Document + its jobs")
-def get_document(session: SessionDep, document_id: uuid.UUID) -> DocumentDetailOut:
+def get_document(
+    session: SessionDep, settings: SettingsDep, document_id: uuid.UUID
+) -> DocumentDetailOut:
     try:
         document = svc.get_document(session, document_id)
     except DocumentNotFound as exc:
         raise HTTPException(404, "document not found") from exc
-    base = to_document_out(document, svc.chunk_count(session, document.id))
+    base = to_document_out(
+        document, svc.chunk_count(session, document.id), _embedded(session, settings, document.id)
+    )
     jobs = [JobOut.model_validate(j) for j in svc.document_jobs(session, document.id)]
     return DocumentDetailOut(**base.model_dump(), jobs=jobs)
 

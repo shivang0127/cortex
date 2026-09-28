@@ -146,6 +146,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Search knowledge: the contents of chunks, by meaning and/or keywords */
+        get: operations["search_chunks_v1_search_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/embeddings/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Index coverage */
+        get: operations["embedding_status_v1_embeddings_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/embeddings/index": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Queue embedding jobs for documents that still need them (resumable) */
+        post: operations["index_embeddings_v1_embeddings_index_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -253,6 +304,12 @@ export interface components {
             subjects: components["schemas"]["SubjectOut"][];
             /** Chunk Count */
             chunk_count: number;
+            /**
+             * Embedded Chunk Count
+             * @description Retrieval chunks with a vector for the configured embedding model
+             * @default 0
+             */
+            embedded_chunk_count: number;
             /** Meta */
             meta: {
                 [key: string]: unknown;
@@ -312,6 +369,12 @@ export interface components {
             subjects: components["schemas"]["SubjectOut"][];
             /** Chunk Count */
             chunk_count: number;
+            /**
+             * Embedded Chunk Count
+             * @description Retrieval chunks with a vector for the configured embedding model
+             * @default 0
+             */
+            embedded_chunk_count: number;
             /** Meta */
             meta: {
                 [key: string]: unknown;
@@ -326,6 +389,31 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /** EmbeddingStatusOut */
+        EmbeddingStatusOut: {
+            /** Enabled */
+            enabled: boolean;
+            /** Provider */
+            provider?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Dimension */
+            dimension: number;
+            /** Chunks Total */
+            chunks_total: number;
+            /** Chunks Embedded */
+            chunks_embedded: number;
+            /** Documents Total */
+            documents_total: number;
+            /** Documents Complete */
+            documents_complete: number;
+            /** Jobs Queued */
+            jobs_queued: number;
+            /** Jobs Running */
+            jobs_running: number;
+            /** Jobs Failed */
+            jobs_failed: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -362,6 +450,27 @@ export interface components {
              */
             duplicate: boolean;
         };
+        /** IndexRequest */
+        IndexRequest: {
+            /**
+             * Force
+             * @description Regenerate even where vectors exist
+             * @default false
+             */
+            force: boolean;
+        };
+        /** IndexResponse */
+        IndexResponse: {
+            /** Enqueued */
+            enqueued: number;
+            /**
+             * Skipped
+             * @description Documents that already had a job waiting
+             */
+            skipped: number;
+            /** Model */
+            model: string;
+        };
         /** JobOut */
         JobOut: {
             /**
@@ -391,6 +500,83 @@ export interface components {
             created_at: string;
             /** Finished At */
             finished_at?: string | null;
+        };
+        /** SearchHitOut */
+        SearchHitOut: {
+            /**
+             * Chunk Id
+             * Format: uuid
+             */
+            chunk_id: string;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Document Title */
+            document_title: string;
+            /** Document Kind */
+            document_kind: string;
+            /** Origin Uri */
+            origin_uri?: string | null;
+            /** Subjects */
+            subjects: string[];
+            /** Week */
+            week?: number | null;
+            /** Heading Path */
+            heading_path: string[];
+            /** Page Start */
+            page_start?: number | null;
+            /** Page End */
+            page_end?: number | null;
+            /** Char Start */
+            char_start: number;
+            /** Char End */
+            char_end: number;
+            /** Ordinal */
+            ordinal: number;
+            /** Text */
+            text: string;
+            /**
+             * Score
+             * @description Ranking score: RRF for hybrid, cosine for semantic, ts_rank for keyword
+             */
+            score: number;
+            /**
+             * Similarity
+             * @description Cosine similarity (semantic/hybrid)
+             */
+            similarity?: number | null;
+            /**
+             * Keyword Score
+             * @description ts_rank_cd (keyword/hybrid)
+             */
+            keyword_score?: number | null;
+            /** Semantic Rank */
+            semantic_rank?: number | null;
+            /** Keyword Rank */
+            keyword_rank?: number | null;
+        };
+        /** SearchResponse */
+        SearchResponse: {
+            /** Query */
+            query: string;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "hybrid" | "semantic" | "keyword";
+            /**
+             * Model
+             * @description Embedding model used for the semantic side
+             */
+            model?: string | null;
+            /** Semantic Candidates */
+            semantic_candidates: number;
+            /** Keyword Candidates */
+            keyword_candidates: number;
+            /** Results */
+            results: components["schemas"]["SearchHitOut"][];
         };
         /** SubjectCreate */
         SubjectCreate: {
@@ -763,6 +949,97 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_chunks_v1_search_get: {
+        parameters: {
+            query: {
+                /** @description Natural-language query */
+                q: string;
+                mode?: "hybrid" | "semantic" | "keyword";
+                limit?: number;
+                subject_id?: string | null;
+                week?: number | null;
+                kind?: ("pdf" | "markdown" | "text" | "docx" | "web" | "youtube") | null;
+                document_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    embedding_status_v1_embeddings_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmbeddingStatusOut"];
+                };
+            };
+        };
+    };
+    index_embeddings_v1_embeddings_index_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["IndexRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IndexResponse"];
                 };
             };
             /** @description Validation Error */

@@ -24,8 +24,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
               <Link href="/library" className="text-muted hover:text-foreground">
                 Library
               </Link>
+              <Link href="/search" className="text-muted hover:text-foreground">
+                Search Knowledge
+              </Link>
               <span className="rounded-full border border-border px-2.5 py-0.5 text-xs text-muted">
-                Phase 1 · ingestion
+                Phase 2 · semantic search
               </span>
             </nav>
           </div>

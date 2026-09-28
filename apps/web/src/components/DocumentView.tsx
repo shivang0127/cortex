@@ -94,6 +94,14 @@ export function DocumentView({ documentId }: { documentId: string }) {
         <Field label="Managed copy" value={document.storage_path ?? "— (URL source)"} mono />
         <Field label="Content hash" value={document.content_hash.slice(0, 16) + "…"} mono />
         <Field label="Retrieval chunks" value={String(document.chunk_count)} />
+        <Field
+          label="Indexed for search"
+          value={
+            document.chunk_count === 0
+              ? "—"
+              : `${document.embedded_chunk_count}/${document.chunk_count} chunks embedded`
+          }
+        />
         {"pages" in meta && <Field label="Pages" value={String(meta.pages)} />}
         {"duration" in meta && <Field label="Duration" value={String(meta.duration)} />}
         {"author" in meta && <Field label="Author" value={String(meta.author)} />}

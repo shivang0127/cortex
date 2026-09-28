@@ -22,6 +22,10 @@ export type Subject = components["schemas"]["SubjectOut"];
 export type Chunk = components["schemas"]["ChunkOut"];
 export type Job = components["schemas"]["JobOut"];
 export type ImportResponse = components["schemas"]["ImportResponse"];
+export type SearchHit = components["schemas"]["SearchHitOut"];
+export type SearchResponse = components["schemas"]["SearchResponse"];
+export type SearchMode = SearchResponse["mode"];
+export type EmbeddingStatus = components["schemas"]["EmbeddingStatusOut"];
 
 export type ImportRequest = {
   file?: File;

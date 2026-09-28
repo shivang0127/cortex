@@ -52,11 +52,22 @@ class Settings(BaseSettings):
     worker_poll_interval_seconds: float = 2.0
     worker_stale_job_seconds: int = 900
 
-    # ── AI providers (protocols only in Phase 0; "none" disables) ─────────
+    # ── AI providers ("none" disables) ────────────────────────────────────
     llm_provider: str = "none"
-    embedding_provider: str = "none"
+    # fastembed (local ONNX model, default) | fake (deterministic, tests) | none
+    embedding_provider: Literal["fastembed", "fake", "none"] = "fastembed"
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    # Must equal the chunk_embeddings.embedding column width (migration 0003).
+    # Changing models to a different width is a migration, not a setting.
+    embedding_dimension: int = 384
+    embedding_cache_dir: Path = Path("data/models")
+    embedding_batch_size: int = 64  # chunks per provider call inside the worker
 
-    @field_validator("data_dir")
+    # ── Search ────────────────────────────────────────────────────────────
+    search_candidates: int = 50  # per-source depth before fusion (ARCHITECTURE.md §7)
+    search_rrf_k: int = 60  # reciprocal-rank-fusion constant
+
+    @field_validator("data_dir", "embedding_cache_dir")
     @classmethod
     def _absolute_data_dir(cls, value: Path) -> Path:
         # Relative paths are relative to the repository, not to the CWD, so the

@@ -11,12 +11,16 @@ def test_repo_root_is_the_project_directory() -> None:
 
 
 def test_defaults_are_local_first(settings_env: pytest.MonkeyPatch) -> None:
-    settings_env.delenv("API_HOST", raising=False)
-    settings_env.delenv("LLM_PROVIDER", raising=False)
+    for var in ("API_HOST", "LLM_PROVIDER", "EMBEDDING_PROVIDER", "EMBEDDING_MODEL"):
+        settings_env.delenv(var, raising=False)
+    get_settings.cache_clear()
     s = get_settings()
     assert s.api_host == "127.0.0.1"
     assert s.llm_provider == "none"
-    assert s.embedding_provider == "none"
+    # Local model, no API key, no service — still local-first.
+    assert s.embedding_provider == "fastembed"
+    assert s.embedding_model == "BAAI/bge-small-en-v1.5" and s.embedding_dimension == 384
+    assert s.embedding_cache_dir.is_absolute()
 
 
 def test_environment_overrides_defaults(settings_env: pytest.MonkeyPatch) -> None:
