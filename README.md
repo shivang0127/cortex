@@ -1,4 +1,4 @@
-# Second Brain
+# Cortex: Personal Knowledge System
 
 **An AI system that builds and maintains a structured model of what you know.**
 
