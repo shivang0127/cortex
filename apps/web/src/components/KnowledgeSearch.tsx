@@ -126,6 +126,9 @@ export function KnowledgeSearch() {
               ))}
             </div>
             <span className="text-muted">{MODE_HELP[mode]}</span>
+            <Link href="/ask" className="text-muted underline hover:text-foreground">
+              Want an answer instead of passages? Ask Second Brain →
+            </Link>
             <select
               value={subjectId}
               onChange={(e) => setSubjectId(e.target.value)}

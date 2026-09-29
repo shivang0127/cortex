@@ -4,7 +4,8 @@ An AI system that builds and maintains a structured model of what one person kno
 built from their own documents, with every derived edge traceable back to the passage
 that justified it.
 
-> **Status:** decisions finalised; Phases 0–2 built (foundations, ingestion & storage, semantic search).
+> **Status:** decisions finalised; Phases 0–3 built (foundations, ingestion & storage,
+> semantic search, grounded answers with citations).
 > **Date:** 14 September 2026
 > **Decision record:** see [§11](#11--decision-record) for the answers that shaped this
 > document. Where this file and a later phase disagree, update this file — it is the
@@ -22,6 +23,7 @@ that justified it.
 | Visual Studio Build Tools 2022 | C++ workload ✓ (only used to compile pgvector) |
 | Docker | CLI installed but unusable: hardware virtualisation is disabled and will stay so. Not required. |
 | Embedding model | `BAAI/bge-small-en-v1.5` (quantised ONNX, 67 MB, 384-d) via `fastembed` on CPU, cached in `data/models/` ✓ |
+| LLM runtime | Ollama 0.34 as a Windows service on `127.0.0.1:11434`; `qwen3:4b-instruct` (Q4_K_M, 2.5 GB) ✓ |
 
 ---
 
@@ -222,7 +224,7 @@ second-brain/
 │  │     │   ├─ classify/      # subject / week suggestion
 │  │     │   └─ analyze/       # gaps.py  conflicts.py
 │  │     ├─ providers/
-│  │     │   ├─ llm/           # base.py (protocol) + ollama.py, anthropic.py, …
+│  │     │   ├─ llm/           # base.py (protocol), ollama.py, fake.py, factory
 │  │     │   └─ embedding/     # base.py (protocol), fastembed_provider.py, fake.py, factory
 │  │     ├─ queue/             # postgres queue, job registry, retry policy
 │  │     └─ prompts/           # v1/concepts.md, v1/relationships.md, …
@@ -478,15 +480,29 @@ create table jobs (
 );
 create index on jobs (status, priority, run_after) where status = 'queued';
 
-create table llm_calls (
-  id uuid primary key, run_id uuid, task text not null,
+create table llm_calls (                  -- built in Phase 3 (migration 0004)
+  id uuid primary key, task text not null,  -- e.g. 'rag.answer'
   provider text not null, model text not null,
   prompt_version text, prompt_hash text not null,   -- doubles as a dev-time cache key
-  request jsonb, response jsonb,
+  status text not null, error text,        -- succeeded | failed | refused
+  request jsonb, response jsonb,           -- only when LLM_LOG_PAYLOADS=true
+  meta jsonb not null default '{}',        -- grounded, citations, sources, context_tokens…
   input_tokens int, output_tokens int, cost_usd numeric(10,6), latency_ms int,  -- cost null for local models
   created_at timestamptz not null default now()
 );
 ```
+
+> ### Decision — `llm_calls` logs metrics always, payloads only on request
+>
+> **Why** Latency, token counts, prompt version and outcome are what make "answers got
+> worse after I changed the prompt" answerable instead of a feeling, and they cost
+> nothing to keep. The prompt and response are different: the prompt *contains the
+> user's own source text*, so storing it by default would quietly duplicate the library
+> into a second table. `LLM_LOG_PAYLOADS=true` turns it on for prompt debugging.
+>
+> **Instead of** Logging everything (a second copy of the corpus, for a single-user tool
+> whose whole premise is that the data stays put) or logging nothing (prompt iteration
+> becomes guesswork).
 
 ### The understanding layer: global default, contextual override
 
@@ -591,7 +607,9 @@ of the ten it likes best, which is worse than an honest `related_to`.
 | `DELETE /v1/documents/{id}` | Cascades chunks and evidence; orphaned concepts flagged, not deleted | 204 |
 | `POST /v1/documents/{id}/reprocess` | Re-run one pipeline stage onward | 202 + job_id |
 | `GET /v1/search` | Hybrid search over chunks; `?mode=chunks\|concepts` | 200 |
-| `POST /v1/ask` | Question → cited answer | 200 / SSE |
+| `POST /v1/ask` | Question → grounded answer + citations | 200 |
+| `POST /v1/ask/stream` | The same, streamed: `sources` → `delta`… → `result` | SSE |
+| `GET /v1/llm/status` | Provider, model, reachable, model installed, context window | 200 |
 | `GET /v1/concepts` | Filter by kind, source count, connectivity | 200 |
 | `GET /v1/concepts/{id}` | Definition, aliases, sources, neighbours, claims | 200 |
 | `PATCH /v1/concepts/{id}` | Rename, edit definition, set `pinned` | 200 |
@@ -941,6 +959,113 @@ indexed SQL queries, no model call.
 > precisely why a RAG-shaped system can't maintain a stable concept identity across
 > documents.
 
+### Answering: retrieval, context, generation, citations
+
+> ### Decision — Retrieval is Phase 2's, unchanged; RAG is a layer on top
+>
+> **Why** `services/rag.py` calls `services.search.search()` — the same hybrid retrieval
+> the Search Knowledge page uses, with the same fusion and the same filters. A second
+> retrieval path would drift from the first and make "why did it answer that?"
+> unanswerable. What Phase 3 adds is everything *after* the hits: a relevance floor,
+> parent expansion, a token budget, the prompt, and citation validation.
+>
+> **Instead of** A bespoke retriever for answering, which is how the two halves of a RAG
+> system quietly stop agreeing about what is relevant.
+
+> ### Decision — A deterministic relevance floor, checked before the model is called
+>
+> **Why** The strongest anti-hallucination measure available is not to ask. Hits below
+> `rag_min_similarity` are not evidence, and if nothing clears the floor the request is
+> refused outright — no prompt, no generation, no chance to invent. A keyword hit always
+> counts, because an exact term match is evidence whatever the vector says.
+>
+> *Calibrated, not guessed:* seven questions the library can answer scored top-1 cosine
+> **0.651–0.860**; six on topics it genuinely lacks scored **0.440–0.527**. The floor sits
+> at **0.60**, inside that gap with margin either side. Deliberately nearer the permissive
+> end: a marginal source still reaches the model, which is instructed to decline, whereas
+> a floor set too high refuses a good question with no second chance. Re-calibrate when
+> the corpus or the embedding model changes.
+>
+> **Instead of** Feeding the top-k unconditionally and trusting the prompt — which turns
+> "what is the capital of Paraguay?" into three paragraphs about finite automata.
+
+> ### Decision — The application owns the citation ID space
+>
+> **Why** Sources are numbered `[S1]…[Sn]` **per request**; the model never sees a chunk
+> id and cannot invent one. On the way back, every marker is checked against that map and
+> anything outside it is deleted from the prose. So a citation in the response always
+> resolves to a chunk row that was actually retrieved — that property is *guaranteed*, not
+> hoped for. `grounded` reports the weaker fact that survived validation: the answer
+> carries at least one real citation.
+>
+> **Instead of** Letting the model emit document titles or ids (it will misspell them, or
+> confidently produce one that does not exist), or asking for JSON with a citations array
+> (small models write markedly worse prose inside JSON, and it cannot stream).
+>
+> **What this does not do** is check that a sentence is *faithful* to the chunk it cites.
+> That needs an entailment model and is deliberately out of scope; the UI says so rather
+> than implying a guarantee the system cannot make.
+
+> ### Decision — Answering is synchronous and streamed, not a worker job
+>
+> **Why** The queue exists for durable, retryable, restart-surviving batch work. A
+> question is interactive and worthless answered thirty seconds after the user has left.
+> Generation runs inside the request; `/v1/ask/stream` sends tokens as they arrive because
+> a local 4B model takes seconds, and citations are resolved at the end, over the whole
+> answer, since a marker can be split across two deltas.
+>
+> **Instead of** Enqueuing a job and polling, which adds latency and job rows to buy
+> durability nobody wants for a question. Phase 4's extraction goes back to the worker,
+> where that trade is the right way round.
+
+> ### Decision — `qwen3:4b-instruct` on Ollama, and why the *instruct* tag specifically
+>
+> **Why** Local, free, Apache 2.0, and 2.5 GB at Q4_K_M. Ollama holds one copy of the
+> model in a service both the API and the worker talk to — in-process would mean two
+> copies of 2.5 GB and two processes fighting over 4 GB of VRAM (the 67 MB embedding model
+> is in-process for exactly the opposite reason).
+>
+> *Measured on this machine (RTX 3050 laptop, 4 GB):* at `num_ctx=4096` Ollama keeps ~67%
+> of the layers on the GPU (~2.4 GB VRAM) and generates ~26 tok/s; 8192 drops to ~58% and
+> is slower. Full offload does not fit, and does not need to.
+>
+> **The tag matters.** The plain `qwen3:4b` tag is the *hybrid* model: thinking is on by
+> default, and it reasons before answering. Measured: 84 s for an answer that came back
+> **empty**, because the reasoning consumed the whole token budget. Ollama's `think:false`
+> removes the `<think>` tags but not the habit — the model simply narrates its analysis in
+> the answer instead. `qwen3:4b-instruct` (the 2507 Instruct build) has no thinking mode
+> at all, which is what a RAG reader wants: read the passages, answer, stop.
+>
+> **Instead of** `gemma3:4b` (3.3 GB plus a vision tower we never use, and the Gemma Terms
+> carry use restrictions); `llama3.2:3b` (older, weaker instruction-following); `qwen3:8b`
+> (5.2 GB — heavy CPU offload, a few tok/s); a hosted API (recurring cost, and the retrieved
+> context would leave the machine). `qwen3:1.7b` is configured as the fast fallback.
+
+> ### Decision — A hosted provider is an explicit, visible privacy change
+>
+> **Why** With a local model the whole loop stays on the machine: Ollama listens on
+> loopback, and the retrieved context — which is verbatim text from the user's textbooks,
+> lecture notes and private notes — never leaves it. That is a property of *this provider*,
+> not of the architecture. The moment `LLM_PROVIDER` names a hosted vendor, every question
+> ships several thousand tokens of that source text to a third party. So the provider and
+> model are printed in the UI under every answer and returned in `generation` on every
+> response: which model answered, and therefore where the text went, is never ambiguous
+> and never a default the user did not choose.
+>
+> **Instead of** Treating providers as interchangeable because the interface is. The
+> interface is; the consequences are not.
+
+> ### Decision — Single-turn only in Phase 3
+>
+> **Why** Multi-turn RAG needs the follow-up condensed into a self-contained query before
+> retrieval ("what about the second one?" retrieves nothing), which is another model call,
+> more latency and another failure mode — for no gain on the thing being built, which is
+> grounded answering. The request schema can grow a `history` field later without a
+> migration, because nothing about a conversation is persisted.
+>
+> **Instead of** Session storage and a condensing step, bought before there is evidence
+> either is needed.
+
 ---
 
 ## 8 — Knowledge-graph architecture
@@ -1164,13 +1289,16 @@ source location — kept deliberately separate from the Library's title lookup.
 > **Done when** searching your own corpus beats `Ctrl+F` across the folder — and you'd miss
 > it if it went away.
 
-### Phase 3 — Question answering with citations · *standalone product*
+### Phase 3 — Question answering with citations · *built · standalone product*
 
-The first LLM provider (a local model), retrieval → parent expansion → generation,
-citation validation against real chunk ids, SSE streaming, and answers rendered with
-clickable sources. AI subject/week suggestion for unclassified documents lands here too,
-since it is the first phase with an LLM. Plus the first version of the eval set: twenty
-questions with the passages that should answer them.
+The first LLM provider (`qwen3:4b-instruct` on Ollama) behind the protocol, with a
+deterministic `fake` provider for tests; retrieval → relevance floor → parent expansion →
+token-budgeted context → generation → citation validation against real chunk ids; the
+`llm_calls` log; `/v1/ask` and SSE `/v1/ask/stream`; and an Ask Second Brain page that
+renders citations as chips over the sources the model was actually given. Single-turn.
+
+AI subject/week suggestion and the eval set are *not* built: both are worth doing now that
+an LLM exists, and both are better placed once the answer prompt has settled.
 
 > **Done when** every citation resolves to a passage that genuinely supports the sentence
 > it's attached to.
@@ -1300,6 +1428,20 @@ above reflects them; this section records the answers so the reasoning survives.
 - **Keyword search uses `websearch_to_tsquery` AND-semantics** — deliberately exact; the
   hybrid fusion is what gives recall.
 - **Document lookup and knowledge search stay separate features** in API and UI (§7).
+
+### Decisions taken during Phase 3
+
+- **Local LLM via Ollama**, `qwen3:4b-instruct` (Apache 2.0), swappable through
+  `LLM_PROVIDER` / `LLM_MODEL`; `fake` serves the tests (§7).
+- **The instruct tag, not the hybrid one** — measured: thinking-on produced an empty
+  answer in 84 s (§7).
+- **A calibrated relevance floor** (0.60) refuses before generating, deterministically.
+- **The application numbers the sources**; invented markers are stripped (§7).
+- **Synchronous streamed generation**, not a worker job (§7).
+- **`llm_calls` records metrics always, payloads only under `LLM_LOG_PAYLOADS`** (§3).
+- **Single-turn**; no conversation state is stored anywhere (§7).
+- **Deferred deliberately:** answer-faithfulness checking (needs an entailment model),
+  quote-level citations, the eval harness, AI subject/week classification.
 
 ### Implementation principles
 

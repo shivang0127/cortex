@@ -26,6 +26,11 @@ export type SearchHit = components["schemas"]["SearchHitOut"];
 export type SearchResponse = components["schemas"]["SearchResponse"];
 export type SearchMode = SearchResponse["mode"];
 export type EmbeddingStatus = components["schemas"]["EmbeddingStatusOut"];
+export type AskRequest = components["schemas"]["AskRequest"];
+export type AskResponse = components["schemas"]["AskResponse"];
+export type AskSource = components["schemas"]["SourceOut"];
+export type AskCitation = components["schemas"]["CitationOut"];
+export type LLMStatus = components["schemas"]["LLMStatusOut"];
 
 export type ImportRequest = {
   file?: File;
@@ -63,4 +68,67 @@ export function errorMessage(error: unknown, status: number): string {
       .join("; ");
   }
   return `HTTP ${status}`;
+}
+
+/**
+ * Stream an answer from `POST /v1/ask/stream`.
+ *
+ * `EventSource` is GET-only, so the SSE frames are parsed off a `fetch` body
+ * instead. Events arrive as `sources` → `delta`… → `result`, or `error`.
+ */
+export type AskStreamHandlers = {
+  onSources?: (sources: AskSource[]) => void;
+  onDelta?: (text: string) => void;
+  onResult?: (result: AskResponse) => void;
+  onError?: (message: string) => void;
+};
+
+export async function streamAsk(
+  request: AskRequest,
+  handlers: AskStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${API_URL}/v1/ask/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    let detail = `HTTP ${response.status}`;
+    try {
+      detail = errorMessage(await response.json(), response.status);
+    } catch {
+      /* the body was not JSON; the status is all we have */
+    }
+    handlers.onError?.(detail);
+    return;
+  }
+
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += value;
+    // SSE frames are separated by a blank line; keep any partial frame buffered.
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      let event = "message";
+      const data: string[] = [];
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event: ")) event = line.slice(7).trim();
+        else if (line.startsWith("data: ")) data.push(line.slice(6));
+      }
+      if (!data.length) continue;
+      const payload = JSON.parse(data.join("\n"));
+      if (event === "sources") handlers.onSources?.(payload as AskSource[]);
+      else if (event === "delta") handlers.onDelta?.((payload as { text: string }).text);
+      else if (event === "result") handlers.onResult?.(payload as AskResponse);
+      else if (event === "error") {
+        handlers.onError?.((payload as { detail: string }).detail);
+      }
+    }
+  }
 }

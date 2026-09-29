@@ -15,8 +15,9 @@ export default function DashboardPage() {
       <HealthCard />
 
       <p className="text-xs text-muted">
-        Import your sources in the Library, then Search Knowledge by meaning. Ask, graph,
-        insights and review arrive in later phases — see ARCHITECTURE.md §10.
+        Import your sources in the Library, search them by meaning, then Ask Second Brain for
+        a grounded answer with citations. Graph, insights and review arrive in later phases —
+        see ARCHITECTURE.md §10.
       </p>
     </div>
   );

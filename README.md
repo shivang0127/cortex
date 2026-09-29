@@ -10,10 +10,11 @@ what your library contains. Local-first, single-user, no recurring API costs req
 
 The design and its reasoning live in [ARCHITECTURE.md](ARCHITECTURE.md). Read that first.
 
-> **Status:** Phase 2 (semantic search) complete — import PDFs, Markdown, text, DOCX, web
-> pages and YouTube transcripts, file them under subjects and weeks, and search what they
-> *say* by meaning and keyword, with every hit traced to its chunk. A local embedding model
-> does the work; no API key, no LLM yet. See
+> **Status:** Phase 3 (grounded answers) complete — import PDFs, Markdown, text, DOCX,
+> web pages and YouTube transcripts; search what they *say*; and ask questions in plain
+> language to get an answer written only from your own sources, with every claim linked
+> back to the passage it came from. A local embedding model and a local LLM do the work:
+> no API key, no subscription, nothing leaves the machine. See
 > [Development phases](ARCHITECTURE.md#10--development-phases).
 
 ---
@@ -30,6 +31,7 @@ The design and its reasoning live in [ARCHITECTURE.md](ARCHITECTURE.md). Read th
 | Migrations | Alembic | The schema will change weekly for months. |
 | Local infra | Native PostgreSQL service (Docker Compose optional) | Everything runs natively on the developer machine; no virtualisation required. |
 | Embeddings | `BAAI/bge-small-en-v1.5` (384-d) on CPU via `fastembed` (ONNX Runtime) | Local and free: a one-time 67 MB download, no PyTorch, no service. Behind a provider protocol, so a bigger or hosted model is a config change (+ one migration if the width changes). |
+| Answering | `qwen3:4b-instruct` (Q4_K_M, 2.5 GB, Apache 2.0) on Ollama | Local and free. One model instance in a service both the API and worker use, with automatic GPU/CPU layer splitting — which is what a 4 GB card needs. Behind the same kind of protocol, so a hosted provider is one adapter file. |
 | AI | Local models first, behind swappable provider protocols | No paid API required for the core application; upgradable later by configuration. |
 
 Modular monolith, not microservices. No LangChain / LlamaIndex — the pipeline is explicit
@@ -44,6 +46,7 @@ and ours.
 | Python | 3.12+ | 3.13 is what this was built on. |
 | Node.js | 20 LTS or newer | For the Next.js frontend. |
 | PostgreSQL | 17 | Native install (below). pgvector is built from source once — needs the C++ build tools. |
+| Ollama | current | Runs the local LLM as a background service. Optional: without it, everything except *Ask* still works. |
 | Visual Studio Build Tools 2022 | C++ workload | Only to compile pgvector. ~3–7 GB, free, one-time. |
 | Git | any recent | |
 
@@ -56,7 +59,19 @@ that have Docker — see [Alternative: Docker](#alternative-docker).
 winget install OpenJS.NodeJS.LTS
 winget install PostgreSQL.PostgreSQL.17 --override "--mode unattended --unattendedmodeui none --superpassword postgres --serverport 5432 --disable-components pgAdmin,stackbuilder"
 winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+winget install Ollama.Ollama
 ```
+
+After Ollama finishes installing, pull the answering model (2.5 GB, one time):
+
+```powershell
+ollama pull qwen3:4b-instruct
+```
+
+> Pull the **`-instruct`** tag, not the plain `qwen3:4b`. The plain tag is the hybrid
+> reasoning model: measured on this machine it spent 84 s thinking and returned an *empty*
+> answer, because the reasoning consumed the whole token budget. The instruct build has no
+> thinking mode and answers in ~10–25 s.
 
 `--superpassword` sets the `postgres` superuser password; pick your own if you like and
 use it wherever `postgres` is typed below. Close and reopen every terminal (and VS Code)
@@ -162,7 +177,7 @@ secondbrain-worker
 ```
 
 It runs the ingestion stages (`ingest.parse` → `ingest.chunk` → `embed.chunks`) for every
-import and idles otherwise. Keep it running while you import; a stopped worker simply
+import and idles otherwise. (Answering does *not* go through the worker — see below.) Keep it running while you import; a stopped worker simply
 leaves documents `pending` (or unindexed) until it is started again. The first embedding
 job downloads the model (~67 MB) into `data/models/`; after that it is fully offline.
 
@@ -207,10 +222,11 @@ document, its chunks, its vectors and its managed copy.
 
 ### Two different searches
 
-| | Where | What it matches | How |
+| | Where | What it matches | What you get |
 | --- | --- | --- | --- |
-| **Find document by title** | Library | Document titles / original filenames | case-insensitive substring (`ILIKE`) |
-| **Search Knowledge** | <http://localhost:3000/search> | What the chunks *say* | embeddings (meaning) + PostgreSQL full-text (keywords), fused |
+| **Find document by title** | Library | Document titles / original filenames | matching documents (case-insensitive `ILIKE`) |
+| **Search Knowledge** | <http://localhost:3000/search> | What the chunks *say* | the passages themselves — embeddings + full-text, fused |
+| **Ask Second Brain** | <http://localhost:3000/ask> | What the chunks *say* | a written answer built from those passages, with citations |
 
 On the Search Knowledge page type a question in your own words — *"How does a neural
 network learn?"* — and pick a mode: **hybrid** (default; meaning and keywords fused with
@@ -218,7 +234,30 @@ reciprocal rank fusion), **semantic** (meaning only) or **keyword** (exact words
 all of them must appear). Each result shows the source document, heading path, page and
 character range, the chunk text, and its scores. The footer shows index coverage; **Index
 now** queues embedding jobs for anything not yet indexed (safe to press repeatedly — it
-never duplicates work). Nothing here generates an answer; that is Phase 3.
+never duplicates work). Nothing here generates an answer — that is the next page.
+
+### Ask Second Brain
+
+Open <http://localhost:3000/ask> and ask in plain language. The same hybrid retrieval runs
+first; the passages that clear the relevance floor are numbered and handed to the local
+model, which is instructed to answer **only** from them and to cite each claim. The answer
+streams in as it is written, citation markers render as `[S1]` chips that jump to the
+source, and the sources panel shows exactly what the model was given — with the cited ones
+highlighted.
+
+Three things are worth knowing about how it behaves:
+
+- **It refuses rather than guesses.** If nothing retrieved clears `RAG_MIN_SIMILARITY`, the
+  request is refused *without calling the model at all* — no prompt, no chance to invent.
+  Ask it the capital of Paraguay and it says your library does not cover that, in 0.1 s.
+- **Citations cannot be fabricated.** The model only ever sees the numbers `[S1]…[Sn]` that
+  this request assigned; any marker outside that set is deleted from the answer before you
+  see it. So every citation shown resolves to a chunk row that was really retrieved.
+- **Grounded ≠ correct.** The `grounded` badge means the answer cites at least one real
+  retrieved passage. It does *not* mean each sentence faithfully represents what that
+  passage says — nothing here checks entailment. The sources are right there; read them.
+
+Single-turn by design: each question is answered on its own, and no conversation is stored.
 
 What happens to an import (ARCHITECTURE.md §6):
 
@@ -239,6 +278,12 @@ What happens to an import (ARCHITECTURE.md §6):
    keyed by chunk *and* model so models can coexist and a switch is a re-index. Already
    embedded chunks are skipped; `POST /v1/embeddings/index {"force": true}` regenerates.
 
+Answering deliberately does **not** use the worker: a question is interactive, and a job
+round-trip would add latency to buy durability nobody wants for a question. Generation runs
+inside the request and streams back. Every call is logged to `llm_calls` (model, prompt
+version and hash, tokens, latency, grounded, citation count) — prompts and responses only
+when `LLM_LOG_PAYLOADS=true`, since they contain your own source text.
+
 Not supported yet: scanned PDFs without a text layer (rejected with a clear error — OCR
 is out of scope), videos without transcripts, pages behind logins.
 
@@ -248,28 +293,33 @@ The same operations are available on the API (<http://127.0.0.1:8000/docs>):
 `GET /v1/documents/{id}/chunks?level=all|sections|retrieval`, `DELETE /v1/documents/{id}`,
 `POST /v1/documents/{id}/reprocess`, `GET /v1/subjects`, `POST /v1/subjects`,
 `GET /v1/jobs/{id}`, `GET /v1/search?q=&mode=hybrid|semantic|keyword&limit=&subject_id=&week=&kind=&document_id=`,
-`GET /v1/embeddings/status`, `POST /v1/embeddings/index`.
+`GET /v1/embeddings/status`, `POST /v1/embeddings/index`,
+`POST /v1/ask`, `POST /v1/ask/stream` (SSE: `sources` → `delta`… → `result`),
+`GET /v1/llm/status`.
 
 ---
 
-## Verifying Phases 0–2
+## Verifying Phases 0–3
 
 | Check | Command | Expect |
 | --- | --- | --- |
 | Backend lint | `cd apps/api; ruff check .; ruff format --check .` | `All checks passed!` |
-| Backend tests | `cd apps/api; pytest` | 107 tests pass (one real-model test skips until the model has been downloaded). Integration tests (marked `integration`) run against the **`secondbrain_test`** database (created by `scripts/init-db.sql`, migrated automatically) so they never touch your library or race the running worker; they **skip** if it is unreachable. |
+| Backend tests | `cd apps/api; pytest` | 169 tests pass (one real-model test skips until the embedding model has been downloaded). No test needs Ollama: a deterministic fake LLM stands in. Integration tests (marked `integration`) run against the **`secondbrain_test`** database (created by `scripts/init-db.sql`, migrated automatically) so they never touch your library or race the running worker; they **skip** if it is unreachable. |
 | Migration SQL (no DB needed) | `cd apps/api; alembic upgrade head --sql` | The SQL for `jobs`, `subjects`, `documents`, `document_subjects`, `chunks` printed to stdout. |
 | Models match migrations | `cd apps/api; alembic check` | `No new upgrade operations detected.` |
 | Database up | `Get-Service postgresql-x64-17` | `Running` (Docker alternative: `docker compose ps` → `healthy`) |
 | pgvector installed | `psql -U secondbrain -h 127.0.0.1 -d secondbrain -c "select extversion from pg_extension where extname='vector'"` | `0.8.6` (installed by `scripts/init-db.sql`) |
-| Migrated | `cd apps/api; alembic current` | `0003 (head)` |
+| Migrated | `cd apps/api; alembic current` | `0004 (head)` |
 | API up | `curl http://127.0.0.1:8000/v1/health` | `"status":"ok"` with `pgvector_version` and `migration_revision` populated. `"degraded"` means the DB is unreachable or unmigrated — the `database.error` field says which. |
 | Worker up | `secondbrain-worker` | `worker … online; handles: embed.chunks, ingest.chunk, ingest.parse, system.ping`. |
 | Frontend checks | `cd apps/web; npm run typecheck; npm run lint; npm run build` | All clean. |
-| Frontend ↔ backend ↔ DB | open <http://localhost:3000> | The **System health** card shows the API version, PostgreSQL version, pgvector version and migration `0003`, all green. If PostgreSQL is down the card says so — that is still the frontend talking to the backend; fix the DB and press Refresh. |
+| Frontend ↔ backend ↔ DB | open <http://localhost:3000> | The **System health** card shows the API version, PostgreSQL version, pgvector version and migration `0004`, all green. If PostgreSQL is down the card says so — that is still the frontend talking to the backend; fix the DB and press Refresh. |
 | Ingestion end to end | <http://localhost:3000/library>: import a PDF with a subject and week | Status goes `pending` → `ready` within seconds (worker running); the document page lists section chunks whose heading paths match the PDF's headings and retrieval chunks with exact character offsets into the stored text. |
 | Index coverage | `curl http://127.0.0.1:8000/v1/embeddings/status` | `chunks_embedded == chunks_total` once the worker has run; otherwise press **Index now** on the Search page (or `curl -X POST …/v1/embeddings/index`). |
 | Knowledge search | <http://localhost:3000/search>: ask *"How does a neural network learn?"* | Chunks from the relevant sources, each with document, heading path, page/character location and score; **semantic** and **keyword** modes return different rankings; the Library's title box is unaffected. |
+| LLM ready | `curl http://127.0.0.1:8000/v1/llm/status` | `"reachable":true,"model_available":true`. If not, start Ollama and `ollama pull qwen3:4b-instruct`. |
+| Grounded answer | <http://localhost:3000/ask>: *"What does a deterministic finite automaton accept?"* | An answer streams in within ~10–25 s, marked **grounded**, with `[S1]`-style chips that jump to the source panel below; the footer names the model, latency and how many chunks cleared the floor. |
+| Refusal | <http://localhost:3000/ask>: *"What is the capital city of Paraguay?"* | Refused in well under a second with no sources and no model call — the relevance floor caught it. |
 
 ---
 
@@ -284,6 +334,7 @@ second-brain/
 ├─ .env.example               # copy to .env (gitignored)
 ├─ data/originals/            # gitignored — managed copies of imported files, by content hash
 ├─ data/models/               # gitignored — the downloaded embedding model
+│                            #   (the LLM lives in Ollama's own store, not here)
 └─ apps/
    ├─ api/                    # Python backend: FastAPI app + worker, one package
    │  ├─ pyproject.toml       # deps, scripts (secondbrain-api, secondbrain-worker), ruff, pytest
@@ -297,16 +348,18 @@ second-brain/
    │     ├─ openapi.py        # exports openapi.json; `secondbrain-openapi` entrypoint
    │     ├─ api/v1/           # routers (thin): health, documents, subjects, jobs
    │     ├─ schemas/          # Pydantic HTTP contracts
-   │     ├─ services/         # documents.py, subjects.py, storage.py, embeddings.py, search.py
+   │     ├─ services/         # documents, subjects, storage, embeddings, search, rag, llm_calls
+   │     ├─ prompts/          # v1/answer.md — versioned, hashed into every llm_calls row
    │     ├─ pipeline/         # parse/ (one parser per kind → ParsedDocument), chunk.py, stages.py
    │     ├─ db/               # base.py (naming convention), engine.py, models/
    │     ├─ queue/            # queue.py (SKIP LOCKED), registry.py (job type → handler + on_failure)
-   │     └─ providers/        # llm/base.py (protocol only); embedding/ (protocol, fastembed, fake)
+   │     └─ providers/        # llm/ (protocol, ollama, fake); embedding/ (protocol, fastembed, fake)
    └─ web/                    # Next.js 16 · TypeScript · Tailwind 4 · App Router
       ├─ next.config.ts       # loads the root .env; exposes NEXT_PUBLIC_API_URL
       └─ src/
-         ├─ app/              # layout.tsx, page.tsx (dashboard), library/ (list + [id]), search/
-         ├─ components/       # HealthCard, ImportForm, Library, DocumentView, KnowledgeSearch, …
+         ├─ app/              # layout, dashboard, library/ (list + [id]), search/, ask/
+         ├─ components/       # HealthCard, ImportForm, Library, DocumentView, KnowledgeSearch,
+         │                    #   AskSecondBrain, ConfirmDialog, StatusBadge
          └─ lib/api/          # client.ts (openapi-fetch) + schema.d.ts (generated)
 ```
 

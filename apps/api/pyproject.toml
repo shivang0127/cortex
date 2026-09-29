@@ -22,12 +22,12 @@ dependencies = [
     "trafilatura>=2.0",
     "youtube-transcript-api>=1.0",
     "fastembed>=0.8",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
-    "httpx>=0.27",
     "ruff>=0.6",
 ]
 

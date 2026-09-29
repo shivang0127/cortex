@@ -197,10 +197,111 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/ask": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Answer a question from your library, with citations */
+        post: operations["ask_v1_ask_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/ask/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** The same answer, streamed as server-sent events */
+        post: operations["ask_stream_v1_ask_stream_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/llm/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Is the language model ready?
+         * @description Always 200 — it describes an unavailable runtime rather than failing like one.
+         */
+        get: operations["llm_status_v1_llm_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AskRequest */
+        AskRequest: {
+            /** Question */
+            question: string;
+            /**
+             * Mode
+             * @description Retrieval mode; defaults to RAG_MODE
+             */
+            mode?: ("hybrid" | "semantic" | "keyword") | null;
+            /** Top K */
+            top_k?: number | null;
+            /** Subject Id */
+            subject_id?: string | null;
+            /** Week */
+            week?: number | null;
+            /** Kind */
+            kind?: ("pdf" | "markdown" | "text" | "docx" | "web" | "youtube") | null;
+            /** Document Id */
+            document_id?: string | null;
+            /** Temperature */
+            temperature?: number | null;
+            /** Max Tokens */
+            max_tokens?: number | null;
+        };
+        /** AskResponse */
+        AskResponse: {
+            /** Question */
+            question: string;
+            /** Answer */
+            answer: string;
+            /**
+             * Refused
+             * @description The library had too little evidence; no answer was generated
+             */
+            refused: boolean;
+            /**
+             * Grounded
+             * @description The answer carries at least one valid citation
+             */
+            grounded: boolean;
+            /** Citations */
+            citations: components["schemas"]["CitationOut"][];
+            /** Sources */
+            sources: components["schemas"]["SourceOut"][];
+            retrieval: components["schemas"]["RetrievalInfo"];
+            generation: components["schemas"]["GenerationInfo"];
+        };
         /** Body_import_document_v1_documents_post */
         Body_import_document_v1_documents_post: {
             /**
@@ -253,6 +354,38 @@ export interface components {
             char_end: number;
             /** Token Count */
             token_count: number;
+            /** Text */
+            text: string;
+        };
+        /**
+         * CitationOut
+         * @description A marker the model used that resolved to a real retrieved chunk.
+         */
+        CitationOut: {
+            /** Marker */
+            marker: number;
+            /**
+             * Chunk Id
+             * Format: uuid
+             */
+            chunk_id: string;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Document Title */
+            document_title: string;
+            /** Heading Path */
+            heading_path: string[];
+            /** Page Start */
+            page_start?: number | null;
+            /** Page End */
+            page_end?: number | null;
+            /** Char Start */
+            char_start: number;
+            /** Char End */
+            char_end: number;
             /** Text */
             text: string;
         };
@@ -415,6 +548,26 @@ export interface components {
             /** Jobs Failed */
             jobs_failed: number;
         };
+        /** GenerationInfo */
+        GenerationInfo: {
+            /** Provider */
+            provider?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Prompt Version */
+            prompt_version: string;
+            /** Latency Ms */
+            latency_ms?: number | null;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -501,6 +654,63 @@ export interface components {
             /** Finished At */
             finished_at?: string | null;
         };
+        /** LLMStatusOut */
+        LLMStatusOut: {
+            /** Enabled */
+            enabled: boolean;
+            /** Provider */
+            provider?: string | null;
+            /** Model */
+            model?: string | null;
+            /**
+             * Reachable
+             * @default false
+             */
+            reachable: boolean;
+            /**
+             * Model Available
+             * @default false
+             */
+            model_available: boolean;
+            /**
+             * Context Window
+             * @default 0
+             */
+            context_window: number;
+            /**
+             * Max Output Tokens
+             * @default 0
+             */
+            max_output_tokens: number;
+            /** Detail */
+            detail?: string | null;
+        };
+        /** RetrievalInfo */
+        RetrievalInfo: {
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "hybrid" | "semantic" | "keyword";
+            /** Embedding Model */
+            embedding_model?: string | null;
+            /**
+             * Hits
+             * @description Chunks returned by Phase 2 retrieval
+             */
+            hits: number;
+            /**
+             * Above Floor
+             * @description …of those, the ones that cleared the relevance floor
+             */
+            above_floor: number;
+            /** Min Similarity */
+            min_similarity: number;
+            /** Top K */
+            top_k: number;
+            /** Context Tokens */
+            context_tokens: number;
+        };
         /** SearchHitOut */
         SearchHitOut: {
             /**
@@ -577,6 +787,67 @@ export interface components {
             keyword_candidates: number;
             /** Results */
             results: components["schemas"]["SearchHitOut"][];
+        };
+        /**
+         * SourceOut
+         * @description A numbered block of context, and where it came from.
+         */
+        SourceOut: {
+            /**
+             * Marker
+             * @description The [S<marker>] the answer may cite
+             */
+            marker: number;
+            /**
+             * Chunk Id
+             * Format: uuid
+             */
+            chunk_id: string;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Document Title */
+            document_title: string;
+            /** Document Kind */
+            document_kind: string;
+            /** Origin Uri */
+            origin_uri?: string | null;
+            /** Subjects */
+            subjects: string[];
+            /** Week */
+            week?: number | null;
+            /** Heading Path */
+            heading_path: string[];
+            /** Page Start */
+            page_start?: number | null;
+            /** Page End */
+            page_end?: number | null;
+            /** Char Start */
+            char_start: number;
+            /** Char End */
+            char_end: number;
+            /** Ordinal */
+            ordinal: number;
+            /**
+             * Text
+             * @description Exactly the text the model was shown for this source
+             */
+            text: string;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /** Score */
+            score: number;
+            /** Similarity */
+            similarity?: number | null;
+            /** Semantic Rank */
+            semantic_rank?: number | null;
+            /** Keyword Rank */
+            keyword_rank?: number | null;
         };
         /** SubjectCreate */
         SubjectCreate: {
@@ -1049,6 +1320,92 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ask_v1_ask_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AskRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AskResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ask_stream_v1_ask_stream_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AskRequest"];
+            };
+        };
+        responses: {
+            /** @description `sources`, then `delta` events, then `result` (or `error`) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    llm_status_v1_llm_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LLMStatusOut"];
                 };
             };
         };

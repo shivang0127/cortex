@@ -53,7 +53,23 @@ class Settings(BaseSettings):
     worker_stale_job_seconds: int = 900
 
     # ── AI providers ("none" disables) ────────────────────────────────────
-    llm_provider: str = "none"
+    # ollama = local runtime (default) | fake = deterministic, tests | none = disabled
+    llm_provider: Literal["ollama", "fake", "none"] = "ollama"
+    llm_model: str = "qwen3:4b-instruct"
+    llm_base_url: str = "http://127.0.0.1:11434"
+    llm_context_tokens: int = 4096  # num_ctx; bounded by 4 GB of VRAM, not by the model
+    llm_max_output_tokens: int = 512
+    llm_temperature: float = 0.1
+    llm_timeout_seconds: float = 120.0
+    llm_keep_alive: str = "30m"  # how long Ollama holds the model in VRAM between questions
+    # Qwen3 tags ship with thinking ON by default. Measured on this machine: an answer
+    # took 84s and came back EMPTY (the reasoning consumed the whole token budget);
+    # with thinking off the same answer took 7.6s. Off unless a model needs it.
+    llm_thinking: bool = False
+    llm_fake_mode: str = "normal"  # fake provider only: normal|refusal|invented|uncited|…
+    # Store full prompts and responses in llm_calls. Off by default: the prompt
+    # contains your source text, and the rows would duplicate it.
+    llm_log_payloads: bool = False
     # fastembed (local ONNX model, default) | fake (deterministic, tests) | none
     embedding_provider: Literal["fastembed", "fake", "none"] = "fastembed"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
@@ -66,6 +82,23 @@ class Settings(BaseSettings):
     # ── Search ────────────────────────────────────────────────────────────
     search_candidates: int = 50  # per-source depth before fusion (ARCHITECTURE.md §7)
     search_rrf_k: int = 60  # reciprocal-rank-fusion constant
+
+    # ── RAG / Ask (ARCHITECTURE.md §7) ────────────────────────────────────
+    rag_mode: Literal["hybrid", "semantic", "keyword"] = "hybrid"
+    rag_top_k: int = 8  # retrieval chunks kept after fusion
+    rag_context_tokens: int = 3000  # budget for the assembled sources block
+    rag_max_source_tokens: int = 700  # a single source longer than this is truncated
+    rag_expand_to_parents: bool = True  # "retrieve small, read big" (§6)
+    # Below this cosine similarity a semantic hit is not evidence. A keyword hit
+    # still counts — an exact term match is evidence whatever the vector says.
+    # Calibrated against the real 87-chunk corpus with bge-small (ARCHITECTURE.md §7):
+    # 7 answerable questions scored top-1 0.651–0.860; 6 questions on topics the
+    # library genuinely lacks scored 0.440–0.527. 0.60 sits in that gap with margin
+    # on both sides. Deliberately permissive rather than tight: a marginal source
+    # still reaches the model, which is instructed to refuse — but a floor set too
+    # high refuses a good question outright, with no second chance.
+    rag_min_similarity: float = 0.60
+    rag_min_sources: int = 1  # fewer sources above the floor than this ⇒ refuse
 
     @field_validator("data_dir", "embedding_cache_dir")
     @classmethod

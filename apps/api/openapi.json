@@ -798,10 +798,290 @@
           }
         }
       }
+    },
+    "/v1/ask": {
+      "post": {
+        "tags": [
+          "ask"
+        ],
+        "summary": "Answer a question from your library, with citations",
+        "operationId": "ask_v1_ask_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ask/stream": {
+      "post": {
+        "tags": [
+          "ask"
+        ],
+        "summary": "The same answer, streamed as server-sent events",
+        "operationId": "ask_stream_v1_ask_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "`sources`, then `delta` events, then `result` (or `error`)",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/llm/status": {
+      "get": {
+        "tags": [
+          "llm"
+        ],
+        "summary": "Is the language model ready?",
+        "description": "Always 200 \u2014 it describes an unavailable runtime rather than failing like one.",
+        "operationId": "llm_status_v1_llm_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMStatusOut"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AskRequest": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Question"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "hybrid",
+                  "semantic",
+                  "keyword"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode",
+            "description": "Retrieval mode; defaults to RAG_MODE"
+          },
+          "top_k": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 20.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top K"
+          },
+          "subject_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Id"
+          },
+          "week": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Week"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "pdf",
+                  "markdown",
+                  "text",
+                  "docx",
+                  "web",
+                  "youtube"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 2.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature"
+          },
+          "max_tokens": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 4096.0,
+                "minimum": 32.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "question"
+        ],
+        "title": "AskRequest"
+      },
+      "AskResponse": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "answer": {
+            "type": "string",
+            "title": "Answer"
+          },
+          "refused": {
+            "type": "boolean",
+            "title": "Refused",
+            "description": "The library had too little evidence; no answer was generated"
+          },
+          "grounded": {
+            "type": "boolean",
+            "title": "Grounded",
+            "description": "The answer carries at least one valid citation"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/CitationOut"
+            },
+            "type": "array",
+            "title": "Citations"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceOut"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "retrieval": {
+            "$ref": "#/components/schemas/RetrievalInfo"
+          },
+          "generation": {
+            "$ref": "#/components/schemas/GenerationInfo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "question",
+          "answer",
+          "refused",
+          "grounded",
+          "citations",
+          "sources",
+          "retrieval",
+          "generation"
+        ],
+        "title": "AskResponse"
+      },
       "Body_import_document_v1_documents_post": {
         "properties": {
           "file": {
@@ -974,6 +1254,82 @@
           "text"
         ],
         "title": "ChunkOut"
+      },
+      "CitationOut": {
+        "properties": {
+          "marker": {
+            "type": "integer",
+            "title": "Marker"
+          },
+          "chunk_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Chunk Id"
+          },
+          "document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Document Id"
+          },
+          "document_title": {
+            "type": "string",
+            "title": "Document Title"
+          },
+          "heading_path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Heading Path"
+          },
+          "page_start": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Start"
+          },
+          "page_end": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page End"
+          },
+          "char_start": {
+            "type": "integer",
+            "title": "Char Start"
+          },
+          "char_end": {
+            "type": "integer",
+            "title": "Char End"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "marker",
+          "chunk_id",
+          "document_id",
+          "document_title",
+          "heading_path",
+          "char_start",
+          "char_end",
+          "text"
+        ],
+        "title": "CitationOut",
+        "description": "A marker the model used that resolved to a real retrieved chunk."
       },
       "DatabaseHealth": {
         "properties": {
@@ -1404,6 +1760,79 @@
         ],
         "title": "EmbeddingStatusOut"
       },
+      "GenerationInfo": {
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "prompt_version": {
+            "type": "string",
+            "title": "Prompt Version"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "prompt_version"
+        ],
+        "title": "GenerationInfo"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1590,6 +2019,128 @@
           "created_at"
         ],
         "title": "JobOut"
+      },
+      "LLMStatusOut": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "reachable": {
+            "type": "boolean",
+            "title": "Reachable",
+            "default": false
+          },
+          "model_available": {
+            "type": "boolean",
+            "title": "Model Available",
+            "default": false
+          },
+          "context_window": {
+            "type": "integer",
+            "title": "Context Window",
+            "default": 0
+          },
+          "max_output_tokens": {
+            "type": "integer",
+            "title": "Max Output Tokens",
+            "default": 0
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "LLMStatusOut"
+      },
+      "RetrievalInfo": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "hybrid",
+              "semantic",
+              "keyword"
+            ],
+            "title": "Mode"
+          },
+          "embedding_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model"
+          },
+          "hits": {
+            "type": "integer",
+            "title": "Hits",
+            "description": "Chunks returned by Phase 2 retrieval"
+          },
+          "above_floor": {
+            "type": "integer",
+            "title": "Above Floor",
+            "description": "\u2026of those, the ones that cleared the relevance floor"
+          },
+          "min_similarity": {
+            "type": "number",
+            "title": "Min Similarity"
+          },
+          "top_k": {
+            "type": "integer",
+            "title": "Top K"
+          },
+          "context_tokens": {
+            "type": "integer",
+            "title": "Context Tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mode",
+          "hits",
+          "above_floor",
+          "min_similarity",
+          "top_k",
+          "context_tokens"
+        ],
+        "title": "RetrievalInfo"
       },
       "SearchHitOut": {
         "properties": {
@@ -1805,6 +2356,167 @@
           "results"
         ],
         "title": "SearchResponse"
+      },
+      "SourceOut": {
+        "properties": {
+          "marker": {
+            "type": "integer",
+            "title": "Marker",
+            "description": "The [S<marker>] the answer may cite"
+          },
+          "chunk_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Chunk Id"
+          },
+          "document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Document Id"
+          },
+          "document_title": {
+            "type": "string",
+            "title": "Document Title"
+          },
+          "document_kind": {
+            "type": "string",
+            "title": "Document Kind"
+          },
+          "origin_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Uri"
+          },
+          "subjects": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Subjects"
+          },
+          "week": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Week"
+          },
+          "heading_path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Heading Path"
+          },
+          "page_start": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Start"
+          },
+          "page_end": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page End"
+          },
+          "char_start": {
+            "type": "integer",
+            "title": "Char Start"
+          },
+          "char_end": {
+            "type": "integer",
+            "title": "Char End"
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Exactly the text the model was shown for this source"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          },
+          "similarity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Similarity"
+          },
+          "semantic_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Rank"
+          },
+          "keyword_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keyword Rank"
+          }
+        },
+        "type": "object",
+        "required": [
+          "marker",
+          "chunk_id",
+          "document_id",
+          "document_title",
+          "document_kind",
+          "subjects",
+          "heading_path",
+          "char_start",
+          "char_end",
+          "ordinal",
+          "text",
+          "score"
+        ],
+        "title": "SourceOut",
+        "description": "A numbered block of context, and where it came from."
       },
       "SubjectCreate": {
         "properties": {

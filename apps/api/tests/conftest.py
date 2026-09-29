@@ -28,6 +28,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from secondbrain.config import Settings, get_settings
 from secondbrain.db.engine import get_session_factory, reset_engine_cache
 from secondbrain.providers.embedding import reset_embedding_provider_cache
+from secondbrain.providers.llm import reset_llm_provider_cache
 
 UNREACHABLE_DATABASE_URL = "postgresql+psycopg://nobody:nothing@127.0.0.1:1/nowhere"
 
@@ -41,15 +42,20 @@ def settings_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[py
     monkeypatch.setenv("ENVIRONMENT", "test")
     monkeypatch.setenv("DATABASE_CONNECT_TIMEOUT_SECONDS", "1")
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
-    # Tests never load the real embedding model; the deterministic provider stands in.
+    # Tests never load a real model; the deterministic providers stand in.
     monkeypatch.setenv("EMBEDDING_PROVIDER", "fake")
+    monkeypatch.setenv("LLM_PROVIDER", "fake")
+    monkeypatch.setenv("LLM_FAKE_MODE", "normal")
+    monkeypatch.setenv("LLM_LOG_PAYLOADS", "false")
     get_settings.cache_clear()
     reset_engine_cache()
     reset_embedding_provider_cache()
+    reset_llm_provider_cache()
     yield monkeypatch
     get_settings.cache_clear()
     reset_engine_cache()
     reset_embedding_provider_cache()
+    reset_llm_provider_cache()
 
 
 @pytest.fixture
@@ -149,7 +155,7 @@ TEST_SUBJECT_PREFIX = "pytest-"
 def library(db_client: TestClient):
     """Tracks documents created through the API and removes them (and test
     subjects) afterwards, so integration tests leave the database as they found it."""
-    from secondbrain.db.models import Job, Subject
+    from secondbrain.db.models import Job, LlmCall, Subject
 
     created: list[str] = []
     yield _Library(db_client, created)
@@ -157,6 +163,7 @@ def library(db_client: TestClient):
         db_client.delete(f"/v1/documents/{document_id}")
     with get_session_factory().begin() as session:
         session.execute(delete(Subject).where(Subject.name.like(f"{TEST_SUBJECT_PREFIX}%")))
+        session.execute(delete(LlmCall))  # not tied to a document; clear per test
         if created:
             session.execute(delete(Job).where(Job.payload["document_id"].astext.in_(created)))
 
